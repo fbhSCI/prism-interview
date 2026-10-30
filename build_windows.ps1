@@ -74,6 +74,11 @@ try {
     Invoke-Checked $pythonPath $arguments
 
     $bundle = Join-Path $OutputDirectory 'PrismInterview'
+    # Some wheel license directories contain generated author-list bytecode.
+    # It is neither runtime code nor a notice; omit build-machine cache paths.
+    Get-ChildItem -LiteralPath $bundle -Recurse -File -Filter '*.pyc' | Where-Object {
+        $_.FullName -match '[\\/][^\\/]+\.dist-info[\\/]licenses[\\/]'
+    } | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
     if ($IncludeGpuLibraries -and $CudaDirectory) {
         & (Join-Path $PSScriptRoot 'scripts\copy_cuda_runtime.ps1') -SourceDirectory $CudaDirectory -DestinationDirectory (Join-Path $bundle 'gpu')
     }
@@ -101,6 +106,7 @@ for d in sorted(m.distributions(), key=lambda x: x.metadata.get('Name','').lower
     if name.lower() in {'pip','setuptools','pytest','pyinstaller','pyinstaller-hooks-contrib','pymupdf'}: continue
     rows.append({'name':name,'version':version,'license':d.metadata.get('License-Expression') or d.metadata.get('License',''), 'home':d.metadata.get('Home-page','')})
     for entry in d.files or []:
+        if '__pycache__' in entry.parts or pathlib.PurePath(str(entry)).suffix.lower() in {'.pyc','.pyo'}: continue
         lower=str(entry).lower()
         if '.dist-info/' in lower and ('/licenses/' in lower or any(s in pathlib.PurePath(lower).name for s in ('license','copying','notice'))):
             source=pathlib.Path(d.locate_file(entry))
