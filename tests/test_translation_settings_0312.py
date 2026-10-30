@@ -11,11 +11,11 @@ from zoom_copilot.config import Preferences
 from zoom_copilot.ui import CopilotWindow
 
 
-def test_new_and_legacy_preferences_do_not_authorize_continuous_upload(tmp_path, monkeypatch):
+def test_new_caption_default_is_checked_but_legacy_settings_are_preserved(tmp_path, monkeypatch):
     monkeypatch.setenv('PRISM_INTERVIEW_HOME', str(tmp_path))
     defaults = Preferences()
     assert defaults.translation_engine == 'qwen'
-    assert defaults.translation_cloud_consent is False
+    assert defaults.translation_cloud_consent is True
     assert defaults.translation_qwen_model == 'qwen3.8-flash'
     assert defaults.translation_timeout == 20.0
     (tmp_path/'preferences.json').write_text(json.dumps({'provider':'qwen','cloud_consent':True}), encoding='utf-8')
@@ -23,6 +23,15 @@ def test_new_and_legacy_preferences_do_not_authorize_continuous_upload(tmp_path,
     assert legacy.cloud_consent is True
     assert legacy.translation_cloud_consent is False
     assert legacy.translation_engine == 'argos'
+
+
+def test_fresh_checkbox_can_be_disabled_and_stays_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv('PRISM_INTERVIEW_HOME', str(tmp_path))
+    prefs = Preferences.load()
+    assert prefs.translation_cloud_consent is True
+    prefs.translation_cloud_consent = False
+    prefs.save()
+    assert Preferences.load().translation_cloud_consent is False
 
 
 def test_continuous_translation_preferences_roundtrip_without_api_keys(tmp_path, monkeypatch):

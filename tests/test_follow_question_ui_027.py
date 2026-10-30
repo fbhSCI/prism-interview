@@ -42,7 +42,11 @@ def test_wheel_and_scrollbar_never_disable_follow_on_new_confirmed_content():
                 assert latest.mapTo(viewport, QPoint(0, latest.height())).y() <= viewport.height()+2
             else:
                 assert 0 < latest.mapTo(viewport, QPoint(0, latest.height())).y() <= viewport.height()+2
-            assert bar.value()==bar.maximum()
+            if bar.value() < bar.maximum():
+                # Keep the whole latest unit visible when its bottom padding
+                # would otherwise cut off the English line at the top.
+                assert latest.height() <= viewport.height()
+                assert 0 <= latest.mapTo(viewport, QPoint()).y() <= 2
         event = QWheelEvent(QPointF(100, 100), QPointF(viewport.mapToGlobal(QPoint(100, 100))),
             QPoint(), QPoint(0, 120), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
             Qt.ScrollPhase.NoScrollPhase, False)

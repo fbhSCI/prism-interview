@@ -36,6 +36,25 @@ def test_fresh_window_starts_qa_auto_without_starting_capture_and_respects_loade
     assert not window.auto_checkbox.isChecked()
 
 
+def test_quick_topmost_switch_tracks_settings_and_does_not_change_overlay(window):
+    from zoom_copilot.overlay import SubtitleOverlay
+    overlay = SubtitleOverlay()
+    window.set_settings({"topmost": True})
+    assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.topmost_quick_button.isChecked()
+    saved = []
+    window.settings_saved.connect(saved.append)
+    window.topmost_quick_button.click()
+    assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert not window.topmost_checkbox.isChecked()
+    assert saved[-1]["topmost"] is False
+    assert overlay.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    window.topmost_quick_button.click()
+    assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert saved[-1]["topmost"] is True
+    overlay.close()
+
+
 @pytest.mark.parametrize("size", [(1366, 768), (1920, 1080)])
 def test_default_layout_favors_full_height_answer_without_clipped_bilingual_question(window, size):
     window.resize(*size)

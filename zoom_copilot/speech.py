@@ -288,6 +288,10 @@ class SpeechWorker:
         try:
             self.on_status(f"加载本地 Whisper {self.model_size}；模型准备完成后才开始采集…")
             model = self._load()
+            # Model loading may be non-interruptible. If the user cancelled
+            # during it, do not start a second recognizer or speaker download.
+            if self.finished.is_set() and (not self._drain or not self._finals):
+                return
             if self.streaming_model_root is not None:
                 from .streaming_asr import StreamingDraftWorker
                 self.streaming = StreamingDraftWorker(
@@ -299,6 +303,10 @@ class SpeechWorker:
                         if self.finished.is_set():
                             self.streaming.stop(drain=False)
                         break
+            if self.finished.is_set() and (not self._drain or not self._finals):
+                if self.streaming is not None:
+                    self.streaming.stop(drain=False)
+                return
             if self.diarizer is not None:
                 try:
                     if self.diarizer.prepare():

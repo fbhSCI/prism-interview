@@ -56,7 +56,7 @@ def package(tmp_path):
     (payload / "docs/guide.md").write_text("Guide", encoding="utf-8")
     manifest = tmp_path / "trusted-runtime-manifest.json"
     manifest.write_text(json.dumps({"schema_version": 1, "base_version": "0.4.0", "files": rows}), encoding="utf-8")
-    target = tmp_path / "new 安装 directory" / "Prism Interview 0.4.1"
+    target = tmp_path / "new 安装 directory" / "Prism Interview 0.4.2"
     env = os.environ.copy()
     env["LOCALAPPDATA"] = str(tmp_path / "local-user-app-data")
     return dict(old=old, payload=payload, manifest=manifest, target=target, env=env, rows=rows)
@@ -105,7 +105,7 @@ def test_fresh_default_directory_is_versioned_and_does_not_start_program(package
     p = package
     result = run_ps("& " + quote(SCRIPT) + " " + arguments(p, destination=False), env=p["env"])
     assert result.returncode == 0, result.stdout + result.stderr
-    target = Path(p["env"]["LOCALAPPDATA"]) / "Programs/PrismInterview/0.4.1"
+    target = Path(p["env"]["LOCALAPPDATA"]) / "Programs/PrismInterview/0.4.2"
     assert (target / "PrismInterview.exe").is_file()
     assert not (target / "data").exists()
 

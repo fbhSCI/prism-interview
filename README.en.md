@@ -38,9 +38,9 @@ We recommend **Qwen `qwen3.8-flash`** as a starting point for caption translatio
 2. In **配置千问 API Key**, choose Qwen and the region matching that key. Paste it into **API Key**. Use **记住本机默认密钥** to save it for this Windows user.
 3. Set **选中模型** to `qwen3.8-flash`. Allow the question, background and retrieved excerpts to be sent. Confirm your actual free allowance or explicitly enable **允许千问使用付费余额**. Provider charges apply; the application does not supply credit.
 4. Click **测试短回答**, then **使用此模型** after a successful result. If the model is unavailable, check your region and its supported model IDs.
-5. For Qwen captions, go to **模型与设置**, choose **千问 Qwen · 连续字幕云翻译**, set `qwen3.8-flash`, check the matching regional endpoint, enable **允许持续英译中使用千问云服务**, and save.
+5. For Qwen captions, go to **模型与设置**, choose **千问 Qwen · 连续字幕云翻译**, set `qwen3.8-flash`, check the matching regional endpoint, and save. **允许持续英译中使用千问云服务** is checked by default on a fresh install; you can uncheck it.
 
-Answers and continuous captions need separate consent. Enter keys inside the application; keep them out of issues, chats and screenshots.
+Caption and answer permissions are separate. The app does not capture or upload on launch. After you select Qwen translation, configure the key and billing allowance, and start listening, confirmed English segments—including English from a selected microphone—are sent to Qwen for translation; audio is not sent. Provider charges may apply. Existing settings that explicitly disabled caption permission remain disabled. Enter keys inside the application; keep them out of issues, chats and screenshots.
 
 ## Make specialist answers relevant
 

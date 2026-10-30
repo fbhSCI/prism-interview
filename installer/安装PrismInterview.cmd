@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Prism Interview 0.4.1
+echo Prism Interview 0.4.2
 echo.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1" %*
 set "INSTALL_RESULT=%ERRORLEVEL%"

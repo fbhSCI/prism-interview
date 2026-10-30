@@ -2,7 +2,7 @@
 
 This is an independent public, general-purpose edition. Do not modify or migrate the private ResearchCopilot installation.
 - Preserve capture, ASR, bilingual translation, automatic/manual answers, model selection, document retrieval, floating panels and accessibility.
-- First launch never starts listening or cloud calls. Cloud use requires explicit user configuration and consent.
+- First launch never starts listening or cloud calls. Fresh installs default continuous Qwen caption permission on; clearly disclose the text sent and possible charges, retain the ability to turn it off, and preserve existing explicit opt-outs. Keys and billing allowance remain user-configured; answer sharing permission is separate.
 - No personal profiles, documents, transcripts, credentials, private endpoints or third-party interview recordings belong in source control or release artifacts.
 - Use a separate PrismInterview data directory and credential namespace.
 - Conversation persistence is explicit, local, schema-versioned, atomic and excludes audio/settings/secrets. Auto-save defaults off.

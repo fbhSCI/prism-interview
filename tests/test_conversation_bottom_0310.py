@@ -82,8 +82,20 @@ def test_follow_off_keeps_history_then_resume_returns_to_bottom(window):
     window.latest_button.click()
     settled(window)
     assert window.follow_transcript.isChecked()
-    assert bar.value() == bar.maximum()
-    assert window.latest_button.text() == '已在最新位置'
+    latest = window._latest_timeline_unit()
+    viewport = window.transcript_scroll.viewport()
+    bottom = latest.mapTo(viewport, QPoint(0, latest.height())).y()
+    assert 0 < bottom <= viewport.height() + 2
+    if latest.height() <= viewport.height():
+        assert 0 <= latest.english.mapTo(viewport, QPoint()).y() < viewport.height()
+    if bar.value() < bar.maximum():
+        # A few pixels of card padding may be left below the viewport to keep
+        # the entire latest English line visible. It must be anchored at the
+        # top, rather than leaving the reader arbitrarily above the end.
+        assert latest.height() <= viewport.height()
+        assert 0 <= latest.mapTo(viewport, QPoint()).y() <= 2
+    if bar.value() >= bar.maximum() - 2:
+        assert window.latest_button.text() == '已在最新位置'
 
 
 def test_resize_and_late_translation_keep_the_newest_end_visible(window):

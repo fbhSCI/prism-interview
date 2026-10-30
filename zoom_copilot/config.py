@@ -37,9 +37,10 @@ class Preferences:
     asr_device: str = "auto"
     compute_type: str = "int8_float16"
     translation_engine: str = "qwen"
-    # Independent of answer consent: continuous confirmed speech is a separate
-    # data flow and must not inherit permission from an answer provider switch.
-    translation_cloud_consent: bool = False
+    # Caption translation has its own toggle and remains independent of answer
+    # sharing. The user requested it checked by default; starting capture and
+    # configuring the provider/key/billing are still separate user actions.
+    translation_cloud_consent: bool = True
     translation_qwen_model: str = "qwen3.8-flash"
     translation_qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     translation_timeout: float = 20.0
@@ -161,6 +162,9 @@ class Preferences:
             # Recommend Qwen for fresh installs without silently changing an
             # existing partial settings file into a cloud workflow.
             data.setdefault("translation_engine", "argos")
+            # An older settings file with no caption choice is not a fresh
+            # installation. Preserve its local/offline behavior until changed.
+            data.setdefault("translation_cloud_consent", False)
             allowed = {item.name for item in fields(cls)} - {"api_key", "session_api_keys"}
             return cls(**{key: val for key, val in data.items() if key in allowed})
         except (OSError, ValueError, TypeError):

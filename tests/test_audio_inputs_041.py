@@ -130,23 +130,23 @@ def test_source_preferences_roundtrip_and_keep_each_device_choice(tmp_path, monk
     pref.save()
     loaded = Preferences.load()
     assert (loaded.input_source, loaded.microphone_id, loaded.speaker_id) == ("microphone", "headset-mic", "monitor-out")
-    assert not loaded.cloud_consent and not loaded.translation_cloud_consent
+    assert not loaded.cloud_consent and loaded.translation_cloud_consent is True
     payload = json.loads((tmp_path / "preferences.json").read_text())
     assert "api_key" not in payload and "session_api_keys" not in payload
 
 
-def test_invalid_source_preferences_are_normalized_without_enabling_cloud():
+def test_invalid_source_preferences_are_normalized_without_enabling_answer_cloud():
     pref = Preferences(input_source="not-a-source", microphone_id=None, speaker_id=17)
     assert pref.input_source == "loopback" and pref.microphone_id == pref.speaker_id == ""
-    assert not pref.cloud_consent and not pref.translation_cloud_consent
+    assert not pref.cloud_consent and pref.translation_cloud_consent is True
 
 
-def test_fresh_default_recommends_same_qwen_flash_model_without_consent():
+def test_fresh_default_recommends_qwen_flash_and_preselects_caption_translation():
     pref = Preferences()
     assert pref.provider == "qwen" and pref.answer_model == "qwen3.8-flash"
     assert pref.translation_engine == "qwen" and pref.translation_qwen_model == "qwen3.8-flash"
     assert pref.api_base_url == pref.translation_qwen_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert not pref.cloud_consent and not pref.translation_cloud_consent and not pref.api_key
+    assert not pref.cloud_consent and pref.translation_cloud_consent is True and not pref.api_key
 
 
 @pytest.mark.parametrize("provider", ["codex", "deepseek", "ollama", "openai_compatible"])

@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $script:PrismInstallerRoot = $PSScriptRoot
-$script:PrismVersion = '0.4.1'
+$script:PrismVersion = '0.4.2'
 $script:PrismBaseVersion = '0.4.0'
 $script:PrismBaseUrl = 'https://github.com/fbhSCI/prism-interview/releases/download/v0.4.0/PrismInterview-0.4.0-Windows-x64.zip'
 $script:PrismBaseHash = '8cf4cd726c7f685221d7ba0c203ad396756ceadeb99b34a0288fa63e5a945999'

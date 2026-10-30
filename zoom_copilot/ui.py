@@ -840,6 +840,11 @@ class CopilotWindow(QMainWindow):
         self.focus_question_button.clicked.connect(self.restore_reading_layout)
         self.focus_question_button.setToolTip("将三个阅读面板收回主窗口，并恢复回答优先的两列布局。")
         header.addWidget(self.focus_question_button)
+        self.topmost_quick_button = _button("主窗口置顶：关")
+        self.topmost_quick_button.setCheckable(True)
+        self.topmost_quick_button.setToolTip("控制主窗口是否始终位于其他窗口上方；浮动字幕的置顶不受此设置影响。")
+        self.topmost_quick_button.toggled.connect(self._quick_topmost_toggled)
+        header.addWidget(self.topmost_quick_button)
         self.focus_controls_button = _button("面试控制")
         # A painted Qt widget popup stays anchored to this button without
         # inserting another toolbar row or depending on native menu rendering.
@@ -950,6 +955,9 @@ class CopilotWindow(QMainWindow):
         self.capture_mode_select.setToolTip("仅选会议声音时不采集本机麦克风；可选远端一人或多人匿名分组。双方同时识别需另选麦克风，我的语音只听译。改变人数后重新开始监听。")
         self.capture_mode_select.currentIndexChanged.connect(self._quick_caption_mode_changed)
         row.addWidget(self.capture_mode_select)
+        self.caption_cloud_disclosure = _label("千问云翻译开启时：已确认的英文文本（包括所选麦克风）会发送至千问，可能产生费用；可在设置中关闭。", "muted", True)
+        self.caption_cloud_disclosure.setToolTip("选择双方或麦克风时，也会发送识别出的你的英文文本；不会发送原始音频。")
+        capture_layout.addWidget(self.caption_cloud_disclosure)
         layout.addWidget(capture)
 
         self.dock_workspace = QMainWindow(page)
@@ -2367,12 +2375,19 @@ class CopilotWindow(QMainWindow):
         self.settings_saved.emit(self.get_settings())
 
     def _apply_topmost(self, enabled: bool) -> None:
+        with QSignalBlocker(self.topmost_quick_button):
+            self.topmost_quick_button.setChecked(enabled)
+        self.topmost_quick_button.setText("主窗口置顶：开" if enabled else "主窗口置顶：关")
         current = bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         if enabled != current:
             was_visible = self.isVisible()
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
             if was_visible:
                 self.show()
+
+    def _quick_topmost_toggled(self, enabled: bool) -> None:
+        self.topmost_checkbox.setChecked(enabled)
+        self._save_settings()
 
     def get_settings(self) -> dict:
         if hasattr(self, "provider_select"):
@@ -2444,7 +2459,7 @@ class CopilotWindow(QMainWindow):
             "provider": "qwen", "ollama_model": "qwen2.5:7b", "whisper_size": "large-v3-turbo",
             "input_source": "loopback", "speaker_id": "", "microphone_id": "",
             "asr_device": "auto", "compute_type": "int8_float16", "translation_engine": "qwen", "auto_answer": True,
-            "translation_cloud_consent": False,
+            "translation_cloud_consent": True,
             "auto_save_sessions": False,
             "translation_qwen_model": "qwen3.8-flash",
             "translation_qwen_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",

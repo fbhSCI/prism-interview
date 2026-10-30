@@ -11,11 +11,11 @@ from zoom_copilot.answers import build_prompt
 from zoom_copilot.knowledge import KnowledgeBase
 
 
-def test_fresh_defaults_are_empty_private_and_do_not_authorize_cloud_or_history():
+def test_fresh_defaults_are_empty_private_and_caption_toggle_is_checked():
     prefs = Preferences()
     assert APP_NAME == "PrismInterview"
     assert prefs.candidate_profile == prefs.research_profile == ""
-    assert not prefs.cloud_consent and not prefs.translation_cloud_consent
+    assert not prefs.cloud_consent and prefs.translation_cloud_consent is True
     assert not prefs.free_quota_confirmed and not prefs.qwen_paid_usage_authorized
     assert not prefs.auto_save_sessions and not prefs.api_key and not prefs.session_api_keys
 

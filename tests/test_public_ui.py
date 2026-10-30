@@ -28,7 +28,7 @@ def test_conversation_persistence_is_explicit_and_off_by_default():
         app.processEvents()
 
 
-def test_public_ui_defaults_have_no_candidate_facts_or_cloud_authorization():
+def test_public_ui_defaults_are_transparent_about_cloud_caption_authorization():
     app = QApplication.instance() or QApplication([])
     window = CopilotWindow()
     try:
@@ -36,7 +36,9 @@ def test_public_ui_defaults_have_no_candidate_facts_or_cloud_authorization():
         assert settings['research_profile'] == ''
         assert settings['candidate_profile'] == ''
         assert settings['cloud_consent'] is False
-        assert settings['translation_cloud_consent'] is False
+        assert settings['translation_cloud_consent'] is True
+        assert '发送至千问' in window.caption_cloud_disclosure.text()
+        assert '可能产生费用' in window.caption_cloud_disclosure.text()
         assert settings['api_key'] == ''
         assert settings['translation_qwen_base_url'] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
         assert not window._listening

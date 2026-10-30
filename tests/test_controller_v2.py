@@ -416,6 +416,73 @@ def test_stop_drains_last_audio_final_and_translation_before_invalidating_sessio
     assert stopped[0] == ("speech", True)
 
 
+def test_cancel_model_preparation_before_capture_ignores_late_ready(controller, monkeypatch):
+    ctrl = controller
+    stopped = []
+    monkeypatch.setattr(ctrl, "_make_translator", lambda *_: SimpleNamespace(ready=True))
+    monkeypatch.setattr(controller_module, "TranslationWorker", lambda *a, **k:
+        SimpleNamespace(start=lambda: None, stop=lambda: stopped.append("translation")))
+    monkeypatch.setattr(controller_module, "SpeechWorker", lambda *a, **k:
+        SimpleNamespace(start=lambda: None, stop=lambda: stopped.append("speech")))
+    ctrl.start_listening()
+    old_session = ctrl._session
+    assert ctrl.preparing and ctrl.window.stop_button.isEnabled()
+    assert not ctrl.window.start_button.isEnabled()
+    ctrl.window.stop_button.click()
+    assert not ctrl.preparing and not ctrl.listening and not ctrl.stopping
+    assert ctrl._session > old_session
+    assert "speech" in stopped and "translation" in stopped
+    assert not ctrl.window.stop_button.isEnabled()
+    ctrl.post("asr_ready", old_session)
+    ctrl.post("translation_ready", old_session)
+    ctrl.post("restoration_ready", old_session)
+    ctrl.post("capture_ready", old_session)
+    ctrl.pump()
+    assert not ctrl.listening and not ctrl._capture_started
+
+
+def test_cancelled_gemma_preparation_blocks_restart_until_old_workers_finish(controller, monkeypatch):
+    ctrl = controller
+    work = {}
+    joined = []
+    class FakeThread:
+        def __init__(self, name): self.name = name
+        def join(self): joined.append(self.name)
+    def background(operation, name="PrismWorker"):
+        work[name] = operation
+        return FakeThread(name)
+    translator = SimpleNamespace(ready=True, install_english_chinese=lambda *a: None,
+                                 translate=lambda text: "翻译")
+    monkeypatch.setattr(ctrl, "background", background)
+    monkeypatch.setattr(ctrl, "_make_translator", lambda *_: translator)
+    monkeypatch.setattr(controller_module, "TranslationWorker", lambda *a, **k:
+        SimpleNamespace(start=lambda: None, stop=lambda: None))
+    speech = SimpleNamespace(start=lambda: None, stop=lambda: None, streaming=None)
+    class SpeechThread(FakeThread):
+        def join(self):
+            super().join()
+            # Reproduce a child created between stop and speech-thread exit.
+            speech.streaming = SimpleNamespace(thread=FakeThread("streaming"))
+    speech.thread = SpeechThread("speech")
+    monkeypatch.setattr(controller_module, "SpeechWorker", lambda *a, **k: speech)
+    ctrl.window.set_settings({"translation_engine": "gemma"})
+    ctrl.start_listening()
+    old_session = ctrl._session
+    assert "PrismPrepareMT" in work
+    ctrl.window.stop_button.click()
+    assert ctrl._cancelled_preparation_pending and not ctrl.window.start_button.isEnabled()
+    ctrl.start_listening()
+    assert ctrl._session > old_session and not ctrl.preparing
+    work["PrismPrepareMT"]()  # Late Gemma warm-up completion from cancelled session.
+    ctrl.pump()
+    assert not ctrl._capture_started and not ctrl.listening
+    work["PrismCancelledPreparation"]()
+    ctrl.pump()
+    assert {"PrismPrepareText", "PrismPrepareMT", "speech", "streaming"} <= set(joined)
+    assert joined.index("speech") < joined.index("streaming")
+    assert not ctrl._cancelled_preparation_pending and ctrl.window.start_button.isEnabled()
+
+
 def test_rejected_final_removes_unconfirmed_card_and_blocks_auto_guess(controller):
     ctrl = controller
     ctrl.change_interview_phase("qa")

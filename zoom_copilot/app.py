@@ -417,7 +417,7 @@ class CopilotController:
         self.background(work, "PrismClear")
 
     def prepare_speech_models(self):
-        if self.listening or self.preparing or self.stopping:
+        if self.listening or self.preparing or self.stopping or getattr(self, "_cancelled_preparation_pending", False):
             self.window.set_status("请先停止监听，再下载或检查语音模型。", "warning")
             return
         values = self.window.get_settings()
@@ -430,6 +430,9 @@ class CopilotController:
         show_model_setup(self.window, self.pref)
 
     def start_listening(self):
+        if getattr(self, "_cancelled_preparation_pending", False):
+            self.window.set_status("上次模型准备仍在后台结束，请稍后再开始。", "warning")
+            return
         if getattr(getattr(self.window, "_model_setup_dialog", None), "active", False):
             self.window.set_status("语音模型仍在准备，请完成后再开始监听。", "warning")
             return
@@ -446,6 +449,7 @@ class CopilotController:
         session = self._session
         self._listen_pref = replace(self.pref)
         self.preparing = True
+        self._preparation_threads = []
         if self.pref.provider=='codex' and self.pref.cloud_consent and not self.busy:
             self.check_models()
         self._capture_started = False
@@ -476,12 +480,16 @@ class CopilotController:
             self.translation.stop()
         self.window.set_status("准备本地语音模型；就绪之前不会开始采集。")
         self.window.start_button.setEnabled(False)
+        # Model preparation can take minutes on a first run. It is a
+        # cancellable session too, even before the capture-ready event.
+        self.window.stop_button.setEnabled(True)
         cache = Path(self.pref.model_cache_dir)
         cache.mkdir(parents=True, exist_ok=True)
         model_path = cache / "asr" / self.pref.whisper_size
         if not (model_path/"model.bin").exists() and shutil.disk_usage(cache).free < 4*1024**3:
             self.preparing = False
             self.window.start_button.setEnabled(True)
+            self.window.stop_button.setEnabled(False)
             self.window.set_status("模型目录不足4GB空闲空间，请在设置中选择其他磁盘的模型目录。", "error")
             return
         model = str(model_path) if (model_path/"model.bin").exists() else self.pref.whisper_size
@@ -491,12 +499,13 @@ class CopilotController:
         except Exception as exc:
             self.preparing = False
             self.window.start_button.setEnabled(True)
+            self.window.stop_button.setEnabled(False)
             self.window.set_status("听译未启动：" + str(exc), "error")
             return
         if hasattr(self.window, "set_translation_engine_status"):
             self.window.set_translation_engine_status(translation_engine,
                 getattr(translator, "model", ""), "当前收音会话")
-        self._translation_ready = translator.ready and translation_engine != "gemma"
+        self._translation_ready = translation_engine != "gemma" and translator.ready
         self.translation = TranslationWorker(
             translator,
             lambda identity, zh: self.post("translation", (session, identity, zh)),
@@ -506,11 +515,11 @@ class CopilotController:
             preview_interval=.4, allow_prefix_preview=True)
         self.translation.start()
         self._restoration_ready = False
-        self.restorer = TranscriptRestorer(cache)
+        self.restorer = restorer = TranscriptRestorer(cache)
         def prepare_text():
-            self.restorer.prepare()
+            restorer.prepare()
             self.post("restoration_ready", session)
-        self.background(prepare_text, "PrismPrepareText")
+        self._preparation_threads.append(self.background(prepare_text, "PrismPrepareText"))
         if not self._translation_ready:
             def prepare_mt():
                 try:
@@ -522,7 +531,7 @@ class CopilotController:
                     self.post("translation_ready", session)
                 except Exception as exc:
                     self.post("status", (session, "翻译模型准备失败："+str(exc)))
-            self.background(prepare_mt, "PrismPrepareMT")
+            self._preparation_threads.append(self.background(prepare_mt, "PrismPrepareMT"))
         self.speech = SpeechWorker(
             model, on_text=lambda kind, en, context: self.post("transcript", (session, kind, en, context)),
             on_status=lambda message: self.post("status", (session, message)),
@@ -533,6 +542,7 @@ class CopilotController:
             diarizer=self._make_diarizer(cache),
             streaming_model_root=cache if self.pref.streaming_captions else None)
         self.speech.start()
+        self._preparation_threads.append(getattr(self.speech, "thread", None))
 
     def _make_diarizer(self, cache):
         if self._microphone_source() or self._single_remote_source() or not self.pref.speaker_diarization:
@@ -660,6 +670,32 @@ class CopilotController:
     def stop_listening(self, drain=True):
         self._cancel_answer_prefetch()
         if self.stopping and drain:
+            return
+        if drain and self.preparing and not self._capture_started:
+            # No audio has been captured yet, so there is nothing to drain.
+            # Invalidate callbacks now rather than wait for model downloads or
+            # GPU initialization; the worker exits after its current load.
+            threads = [t for t in getattr(self, "_preparation_threads", []) if t is not None]
+            speech = self.speech
+            self.stop_listening(drain=False)
+            if threads:
+                self._cancelled_preparation_pending = True
+                self.window.start_button.setEnabled(False)
+                self.window.set_status("已取消监听。模型下载或加载仍在后台结束，完成后可重新开始。")
+                def wait_preparation():
+                    for thread in threads:
+                        thread.join()
+                    # The speech thread may spawn a streaming recognizer while
+                    # cancellation is racing with model setup. It can finish
+                    # before that child has finished downloading/loading.
+                    streaming = getattr(speech, "streaming", None)
+                    stream_thread = getattr(streaming, "thread", None)
+                    if stream_thread is not None:
+                        stream_thread.join()
+                    self.post("preparation_cancelled_complete")
+                self.background(wait_preparation, "PrismCancelledPreparation")
+            else:
+                self.window.set_status("已取消监听准备。")
             return
         if drain and (self.audio is not None or self.speech is not None):
             self.stopping = True
@@ -1848,6 +1884,9 @@ class CopilotController:
         return ArgosTranslator(Path(cache) / "translation")
 
     def prepare_translation(self):
+        if getattr(self, "_cancelled_preparation_pending", False):
+            self.window.set_status("上次模型准备仍在后台结束，请稍后再检查翻译模型。", "warning")
+            return
         self.save_settings(self.window.get_settings())
         cache = Path(self.pref.model_cache_dir)
         engine = self.pref.translation_engine
@@ -2103,8 +2142,13 @@ class CopilotController:
                 self.window.set_devices(devices, selected_id, source=source)
                 if source == "loopback" and not self.pref.speaker_id and devices:
                     self.pref.speaker_id = devices[0][0]
-                if self.preparing or self.stopping:
+                if self.preparing or self.stopping or getattr(self, "_cancelled_preparation_pending", False):
                     self.window.start_button.setEnabled(False)
+            elif kind == "preparation_cancelled_complete":
+                self._cancelled_preparation_pending = False
+                if not (self.preparing or self.listening or self.stopping):
+                    self.window.set_listening(False)
+                    self.window.set_status("已取消监听，后台模型准备已结束；可以重新开始。")
             elif kind == "asr_ready":
                 self._start_capture(data)
             elif kind == 'capture_ready':
