@@ -14,9 +14,9 @@ from zoom_copilot.ui import CopilotWindow
 def test_new_and_legacy_preferences_do_not_authorize_continuous_upload(tmp_path, monkeypatch):
     monkeypatch.setenv('PRISM_INTERVIEW_HOME', str(tmp_path))
     defaults = Preferences()
-    assert defaults.translation_engine == 'argos'
+    assert defaults.translation_engine == 'qwen'
     assert defaults.translation_cloud_consent is False
-    assert defaults.translation_qwen_model == 'qwen-flash'
+    assert defaults.translation_qwen_model == 'qwen3.8-flash'
     assert defaults.translation_timeout == 20.0
     (tmp_path/'preferences.json').write_text(json.dumps({'provider':'qwen','cloud_consent':True}), encoding='utf-8')
     legacy = Preferences.load()

@@ -29,20 +29,24 @@ def app_dir() -> Path:
 @dataclass
 class Preferences:
     speaker_id: str = ""
+    # Keep independent choices so changing source never substitutes one device
+    # class for another or forgets the user's selected headset.
+    input_source: str = "loopback"
+    microphone_id: str = ""
     whisper_size: str = "large-v3-turbo"
     asr_device: str = "auto"
     compute_type: str = "int8_float16"
-    translation_engine: str = "argos"
+    translation_engine: str = "qwen"
     # Independent of answer consent: continuous confirmed speech is a separate
     # data flow and must not inherit permission from an answer provider switch.
     translation_cloud_consent: bool = False
-    translation_qwen_model: str = "qwen-flash"
+    translation_qwen_model: str = "qwen3.8-flash"
     translation_qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     translation_timeout: float = 20.0
     model_cache_dir: str = ""
     ollama_model: str = "qwen2.5:7b"
     ollama_endpoint: str = "http://127.0.0.1:11434"
-    provider: str = "codex"
+    provider: str = "qwen"
     answer_model: str = ""
     answer_speed: str = "fast"
     cloud_consent: bool = False
@@ -96,6 +100,21 @@ class Preferences:
     top_k: int = 5
 
     def __post_init__(self):
+        # Provider-specific defaults must not be attached to a user who chose
+        # Codex, DeepSeek, Ollama or a custom endpoint instead.
+        if self.provider == "qwen":
+            if not self.answer_model:
+                self.answer_model = "qwen3.8-flash"
+            if not self.api_base_url:
+                self.api_base_url = {
+                    "cn-beijing": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "ap-southeast-1": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                }.get(self.qwen_region, "")
+        if self.input_source not in ("loopback", "microphone", "both"):
+            self.input_source = "loopback"
+        for name in ("speaker_id", "microphone_id"):
+            if not isinstance(getattr(self, name), str):
+                setattr(self, name, "")
         # Only literal booleans may authorize persistence, sharing or cloud billing.
         # Strings such as "false"/"yes" and numeric JSON values are not consent.
         for name in ("auto_save_sessions", "cloud_consent", "translation_cloud_consent",
@@ -107,7 +126,7 @@ class Preferences:
             self.translation_engine = "argos"
         if not isinstance(self.translation_cloud_consent, bool):
             self.translation_cloud_consent = False
-        self.translation_qwen_model = str(self.translation_qwen_model or "qwen-flash").strip() or "qwen-flash"
+        self.translation_qwen_model = str(self.translation_qwen_model or "qwen3.8-flash").strip() or "qwen3.8-flash"
         self.translation_qwen_base_url = str(self.translation_qwen_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip().rstrip("/")
         try:
             timeout = float(self.translation_timeout)
@@ -138,6 +157,10 @@ class Preferences:
             data = json.loads(file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return cls()
+            # Prior releases used local translation when this field was absent.
+            # Recommend Qwen for fresh installs without silently changing an
+            # existing partial settings file into a cloud workflow.
+            data.setdefault("translation_engine", "argos")
             allowed = {item.name for item in fields(cls)} - {"api_key", "session_api_keys"}
             return cls(**{key: val for key, val in data.items() if key in allowed})
         except (OSError, ValueError, TypeError):

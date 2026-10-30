@@ -226,8 +226,8 @@ def test_capture_ready_only_after_recorder_context_is_open(monkeypatch):
             assert capture.ready_event.is_set() and "ready" in events
             capture.stop()
             return np.zeros((numframes, 1), dtype=np.float32)
-    device = SimpleNamespace(isloopback=True, name="fake", recorder=lambda **kwargs: Recorder())
-    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(get_microphone=lambda *args, **kwargs: device))
+    device = SimpleNamespace(id="fake", isloopback=True, name="fake", recorder=lambda **kwargs: Recorder())
+    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(all_microphones=lambda **kwargs: [device]))
     real_segmenter = audio_module.Segmenter
     monkeypatch.setattr(audio_module, "Segmenter", lambda **kwargs: real_segmenter(vad=False, **kwargs))
     capture._run()
@@ -240,6 +240,6 @@ def test_capture_open_error_never_signals_ready(monkeypatch):
     ready = []
     capture = AudioCapture("missing", .005, lambda *args: None, lambda *args: None,
                            lambda *args: None, on_ready=lambda: ready.append(True))
-    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(get_microphone=lambda *args, **kwargs: None))
+    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(all_microphones=lambda **kwargs: []))
     capture._run()
     assert capture.error_event.is_set() and not capture.ready_event.is_set() and not ready

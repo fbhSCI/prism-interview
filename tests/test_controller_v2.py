@@ -76,7 +76,7 @@ def controller(tmp_path, monkeypatch):
     monkeypatch.setattr(controller_module.QTimer, "singleShot",
                         lambda delay, callback: callbacks.append(callback))
     window = CopilotWindow()
-    prefs = Preferences(provider="codex", cloud_consent=True, share_evidence=True,
+    prefs = Preferences(provider="codex", translation_engine="argos", cloud_consent=True, share_evidence=True,
                         speaker_id="speaker", model_cache_dir=str(tmp_path / "models"),
                         caption_speaker_mode="acoustic", interview_phase="presentation")
     ctrl = controller_module.CopilotController(window, prefs)

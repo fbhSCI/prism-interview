@@ -77,7 +77,7 @@ def test_zoom_scientific_fragments_translate_whole_source_and_retain_raw(control
     for row in c._transcripts:
         assert c._caption_raw[row['id']] == row['raw_en']
         assert row["speaker_id"] is None and row["speaker_status"] == "source"
-        assert row["speaker_label"] == "Zoom远端（单一远端模式）"
+        assert row["speaker_label"] == "对方 · 会议声音"
         assert row["turn_id"] == f"zoom-source-{c._session}-{c._phase_epoch}"
     # The real period after "0.5 seconds." may end a paragraph; its negation
     # and numeric condition must stay together in that paragraph's final input.
@@ -115,7 +115,7 @@ def test_acoustic_revisions_cannot_promote_single_source_to_confirmed_identity(c
     assert c._transcripts[0]["speaker_status"] == "source"
     c.on_transcript("partial", "And estimate the uncertainty", acoustic_context(c,2,2,3))
     assert c._live_data["speaker_status"] == "source"
-    assert c._live_data["speaker_label"] == "Zoom远端（单一远端模式）"
+    assert c._live_data["speaker_label"] == "对方 · 会议声音"
 
 
 def test_single_source_rejected_fragment_still_blocks_automatic_answer(controller):

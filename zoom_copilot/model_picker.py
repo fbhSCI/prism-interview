@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QSignalBlocker, QTimer
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
     QFrame, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
-    QSplitter, QVBoxLayout, QWidget,
+    QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .config import Preferences
@@ -128,22 +128,35 @@ class ModelPickerDialog(QDialog):
         self.forget_key_button.clicked.connect(self._delete_default_key)
         self.free_checkbox = QCheckBox("已确认此提供方有免费额度，且已在控制台禁止超额计费")
         api_form.addRow(self.free_checkbox)
-        api_note = QLabel("程序无法验证免费余额或冻结计费。回答需确认免费额度，或已有千问付费授权；保存密钥不会改变授权。密钥需与地域匹配。")
+        self.qwen_paid_checkbox = QCheckBox("允许千问使用付费余额")
+        self.qwen_paid_checkbox.setToolTip("只授权当前选择的千问服务使用自己的余额；软件不赠送额度，也不会替你设置平台消费上限。")
+        api_form.addRow(self.qwen_paid_checkbox)
+        api_note = QLabel("程序无法验证免费余额或冻结计费。有免费额度时勾选免费额度；使用千问充值余额时勾选付费余额。保存密钥本身不会开启调用。密钥需与地域匹配。")
         api_note.setWordWrap(True)
         api_form.addRow(api_note)
         layout.addLayout(form)
         layout.addWidget(self.api_fields)
 
+        self.catalog_toggle = QToolButton()
+        self.catalog_toggle.setCheckable(True)
+        self.catalog_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.catalog_toggle.setToolTip("已预填推荐模型时可直接使用。想更换模型，再展开目录并刷新。")
+        self.catalog_toggle.toggled.connect(self._set_catalog_expanded)
+        layout.addWidget(self.catalog_toggle)
+        self.catalog_panel = QWidget()
+        catalog_layout = QVBoxLayout(self.catalog_panel)
+        catalog_layout.setContentsMargins(0, 0, 0, 0)
+        catalog_layout.setSpacing(6)
         controls = QHBoxLayout()
         self.catalog_title = QLabel("当前订阅可用 GPT 文本模型")
         self.catalog_title.setStyleSheet("font-weight:650;")
         controls.addWidget(self.catalog_title, 1)
         self.refresh_button = QPushButton("刷新官方目录")
         controls.addWidget(self.refresh_button)
-        layout.addLayout(controls)
+        catalog_layout.addLayout(controls)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("筛选模型名称，例如 luna、sol、flash、qwen")
-        layout.addWidget(self.search_input)
+        catalog_layout.addWidget(self.search_input)
         self.model_list = QListWidget()
         self.model_list.setObjectName("answerModelList")
         # Style both row states explicitly so native Windows palette changes
@@ -188,7 +201,8 @@ class ModelPickerDialog(QDialog):
         self.result_splitter.addWidget(self.test_panel)
         self.result_splitter.setChildrenCollapsible(False)
         self.test_panel.hide()
-        layout.addWidget(self.result_splitter, 1)
+        catalog_layout.addWidget(self.result_splitter, 1)
+        layout.addWidget(self.catalog_panel, 1)
         selected = QFormLayout()
         self.model_input = QLineEdit()
         self.model_input.setPlaceholderText("Codex 留空：优先选择本机已测较快的可用 GPT")
@@ -196,7 +210,8 @@ class ModelPickerDialog(QDialog):
         self.speed_select = QComboBox()
         self.speed_select.addItem("Fast · 较快消耗现有订阅额度", "fast")
         self.speed_select.addItem("标准", "standard")
-        selected.addRow("Codex 速度", self.speed_select)
+        self.speed_label = QLabel("Codex 速度")
+        selected.addRow(self.speed_label, self.speed_select)
         self.fast_note = QLabel("自动优先 GPT-5.6 Luna（目录存在时），否则选择可用 Luna / 账号默认。" + TESTED_FAST_NOTE + "。")
         self.fast_note.setWordWrap(True)
         selected.addRow(self.fast_note)
@@ -206,7 +221,10 @@ class ModelPickerDialog(QDialog):
         self.evidence_checkbox = QCheckBox("发送检索命中的少量资料片段")
         self.evidence_checkbox.setChecked(preferences.share_evidence)
         selected.addRow(self.evidence_checkbox)
-        layout.addLayout(selected)
+        # Connection/model/consent are the primary task. Keep them together
+        # above the optional catalog, rather than below its empty list.
+        layout.insertLayout(2, selected)
+        layout.addStretch(1)
         self.status_label = QLabel("尚未读取目录。目录可见不等于有免费额度或必然可调用。")
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(36)
@@ -239,7 +257,8 @@ class ModelPickerDialog(QDialog):
             keys[initial] = preferences.api_key
         self._states[initial] = {"model": preferences.ollama_model if initial == "ollama" else preferences.answer_model,
                                  "endpoint": preferences.api_base_url, "free": preferences.free_quota_confirmed,
-                                 "speed": preferences.answer_speed, "region": preferences.qwen_region}
+                                 "speed": preferences.answer_speed, "region": preferences.qwen_region,
+                                 "paid": preferences.qwen_paid_usage_authorized}
         initial_endpoint = (preferences.api_base_url.strip() or
             ("https://api.deepseek.com/v1" if initial == "deepseek" else
              QWEN_REGION_ENDPOINTS.get(preferences.qwen_region, "") if initial == "qwen" else ""))
@@ -255,12 +274,20 @@ class ModelPickerDialog(QDialog):
         if initial == "codex" and preferences.cloud_consent:
             QTimer.singleShot(0, self.refresh_catalog)
 
+    def _set_catalog_expanded(self, expanded):
+        if not hasattr(self, "catalog_panel"):
+            return
+        self.catalog_panel.setVisible(bool(expanded))
+        self.catalog_toggle.setText("收起模型目录" if expanded else "展开模型目录（可选）")
+        self.catalog_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+
     def _remember_current(self):
         if not self._provider:
             return
         self._states[self._provider] = {"model": self.model_input.text().strip(),
                                        "endpoint": self.endpoint_input.text().strip(),
                                        "free": self.free_checkbox.isChecked(),
+                                       "paid": self.qwen_paid_checkbox.isChecked(),
                                        "speed": self.speed_select.currentData(),
                                        "region": self.region_select.currentData()}
         if self._provider in ("deepseek", "qwen", "compatible"):
@@ -284,7 +311,12 @@ class ModelPickerDialog(QDialog):
         self.api_fields.setVisible(api)
         self.region_select.setVisible(self._provider == "qwen")
         self.region_label.setVisible(self._provider == "qwen")
+        self.qwen_paid_checkbox.setVisible(self._provider == "qwen")
+        self.speed_select.setVisible(self._provider == "codex")
+        self.speed_label.setVisible(self._provider == "codex")
         self.speed_select.setEnabled(self._provider == "codex")
+        self.catalog_toggle.setChecked(self._provider in ("codex", "ollama"))
+        self._set_catalog_expanded(self.catalog_toggle.isChecked())
         self.fast_note.setVisible(self._provider == "codex")
         self.cloud_checkbox.setEnabled(self._provider != "ollama")
         self.evidence_checkbox.setEnabled(self._provider != "ollama")
@@ -292,6 +324,7 @@ class ModelPickerDialog(QDialog):
         self.model_input.setPlaceholderText("留空：优先选择本机已测较快的可用 GPT" if self._provider == "codex" else
                                             "请从目录选择，或填写该地域控制台中的确切文本模型标识")
         self.free_checkbox.setChecked(bool(state.get("free", False)))
+        self.qwen_paid_checkbox.setChecked(state.get("paid") is True if self._provider == "qwen" else False)
         self.speed_select.setCurrentIndex(max(0, self.speed_select.findData(state.get("speed", "fast"))))
         self.region_select.blockSignals(True)
         self.region_select.setCurrentIndex(max(0, self.region_select.findData(state.get("region", "cn-beijing"))))
@@ -388,6 +421,7 @@ class ModelPickerDialog(QDialog):
         self.model_list.clear()
         self.model_input.clear()
         self.free_checkbox.setChecked(False)
+        self.qwen_paid_checkbox.setChecked(False)
         self.status_label.setText("地域已更改。请核对该地域的密钥、免费额度和模型目录；其他地域需要业务空间专属地址。")
         self.refresh_button.setEnabled(True)
 
@@ -424,6 +458,7 @@ class ModelPickerDialog(QDialog):
         prefs.api_base_url = self.endpoint_input.text().strip() if self._provider not in ("codex", "ollama") else ""
         prefs.qwen_region = str(self.region_select.currentData())
         prefs.api_key = prefs.session_api_keys.get(self._provider, "")
+        prefs.qwen_paid_usage_authorized = self.qwen_paid_checkbox.isChecked() if self._provider == "qwen" else False
         prefs.free_quota_confirmed = self.free_checkbox.isChecked() if self._provider in ("deepseek", "qwen", "compatible") else False
         if self._provider == "ollama":
             prefs.ollama_model = self.model_input.text().strip() or self._preferences.ollama_model
@@ -432,6 +467,7 @@ class ModelPickerDialog(QDialog):
         return prefs
 
     def refresh_catalog(self):
+        self.catalog_toggle.setChecked(True)
         prefs = self.selected_preferences()
         if prefs.provider != "ollama" and not prefs.cloud_consent:
             self.status_label.setText("请先允许连接所选云服务，或选择本地 Ollama；本次未读取目录。")
@@ -574,6 +610,7 @@ class ModelPickerDialog(QDialog):
         generation = self._test_generation
         self._test_parts = {"answer_en": "", "answer_zh": ""}
         self.test_output.clear()
+        self.catalog_toggle.setChecked(True)
         self.test_panel.show()
         self.result_splitter.setSizes([180, 180])
         QTimer.singleShot(0, self._reveal_test_result)

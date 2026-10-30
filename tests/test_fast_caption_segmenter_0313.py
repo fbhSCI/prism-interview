@@ -113,8 +113,8 @@ def test_capture_forwards_fast_policy_and_epoch_flush_keeps_only_new_source(monk
             if self.index==7:capture.set_context(42)
             if self.index==50:capture.stop()
             return np.full((numframes,1),1. if self.index<7 else 2.,np.float32)
-    device=SimpleNamespace(isloopback=True,name='fake',recorder=lambda **kwargs:Recorder())
-    monkeypatch.setitem(sys.modules,'soundcard',SimpleNamespace(get_microphone=lambda *args,**kwargs:device))
+    device=SimpleNamespace(id='fake',isloopback=True,name='fake',recorder=lambda **kwargs:Recorder())
+    monkeypatch.setitem(sys.modules,'soundcard',SimpleNamespace(all_microphones=lambda **kwargs:[device]))
     def segmenter(**kwargs):
         constructed.append(kwargs)
         return Segmenter(vad=False,**kwargs)

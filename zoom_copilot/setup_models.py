@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import sys
 
 
 def prepare(model_dir, asr="large-v3-turbo", translation=True, skip_asr=False,
@@ -13,7 +14,6 @@ def prepare(model_dir, asr="large-v3-turbo", translation=True, skip_asr=False,
     root.mkdir(parents=True,exist_ok=True)
     if not skip_asr:
         from faster_whisper.utils import _MODELS
-        from huggingface_hub import snapshot_download
         repository=_MODELS.get(asr)
         if not repository:
             raise ValueError("Unsupported ASR model: "+asr)
@@ -21,12 +21,35 @@ def prepare(model_dir, asr="large-v3-turbo", translation=True, skip_asr=False,
         needed=4*1024**3 if "large" in asr else 2*1024**3
         if not (target/"model.bin").is_file() and shutil.disk_usage(root).free<needed:
             raise RuntimeError("模型目录可用空间不足，请在其他磁盘选择至少4GB空闲目录。")
-        on_status("Downloading public ASR weights: "+repository)
-        snapshot_download(repository,local_dir=str(target),token=False,
-            allow_patterns=["config.json","preprocessor_config.json","model.bin","tokenizer.json","vocabulary.*"],
-            max_workers=3)
-        if not (target/"model.bin").is_file():
-            raise RuntimeError("ASR download did not produce model.bin")
+        required = ("model.bin", "config.json", "tokenizer.json")
+        cached = all((target/name).is_file() and (target/name).stat().st_size > 0 for name in required)
+        if cached:
+            on_status("已找到本地英语识别模型：" + asr)
+        else:
+            from huggingface_hub import snapshot_download
+            progress_options = {}
+            if sys.stderr is None:
+                # PyInstaller's --windowed build has no stderr stream. Disable
+                # HF's nested transfer bars as well as its outer iterator; the
+                # desktop dialog has its own queued status/progress display.
+                # This is process-local and never changes the user's env vars.
+                from huggingface_hub.utils import disable_progress_bars, tqdm as hf_tqdm
+                disable_progress_bars()
+
+                class WindowedTqdm(hf_tqdm):
+                    def __init__(self, *args, **kwargs):
+                        kwargs["disable"] = True
+                        super().__init__(*args, **kwargs)
+
+                progress_options["tqdm_class"] = WindowedTqdm
+            on_status("正在下载公开英语识别模型："+repository)
+            snapshot_download(repository,local_dir=str(target),token=False,
+                allow_patterns=["config.json","preprocessor_config.json","model.bin","tokenizer.json","vocabulary.*",
+                                "README.md", "LICENSE", "LICENSE.*", "COPYING*"],
+                max_workers=3, **progress_options)
+            if not all((target/name).is_file() and (target/name).stat().st_size > 0 for name in required):
+                raise RuntimeError("ASR download did not produce the required model files")
+            _preserve_whisper_notice(target, repository, on_status)
     if translation:
         if translation_engine=="nllb":
             from .translation_nllb import NllbTranslator
@@ -62,6 +85,33 @@ def prepare(model_dir, asr="large-v3-turbo", translation=True, skip_asr=False,
             "speaker_model":str(speaker_path) if speaker_path else None,
             "streaming_model":str(streaming_path) if streaming_path else None,
             "punctuation_model":str(punctuation_path) if punctuation_path else None}
+
+
+def _preserve_whisper_notice(target, repository, on_status):
+    """Keep source attribution with a new download, without reading any auth.
+
+    Cached usable models never require a network call merely to open/check the
+    application. Model redistribution notices are reviewed by the packager.
+    """
+    target = Path(target)
+    (target / "MODEL_SOURCE.txt").write_text(
+        "Converted model: https://huggingface.co/" + repository + "\n"
+        "Original Whisper model: https://github.com/openai/whisper\n"
+        "Original model license: MIT; preserve the upstream notices.\n", encoding="utf-8")
+    notice = target / "WHISPER_LICENSE.txt"
+    if notice.is_file():
+        return
+    try:
+        from urllib.request import urlopen
+        with urlopen("https://raw.githubusercontent.com/openai/whisper/main/LICENSE", timeout=20) as response:
+            text = response.read(65537).decode("utf-8")
+        if len(text.encode("utf-8")) > 65536 or "MIT License" not in text or "Permission is hereby granted" not in text:
+            raise ValueError("Unexpected license response")
+        temporary = notice.with_suffix(".txt.part")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(notice)
+    except Exception:
+        on_status("识别模型已下载；上游许可证暂未下载，请保留随包的第三方说明，重新分发前核对许可证。")
 
 
 def main():

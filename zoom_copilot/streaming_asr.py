@@ -6,7 +6,7 @@ used as a confirmed question.
 """
 from __future__ import annotations
 
-from collections import deque
+from collections import deque, OrderedDict
 import hashlib
 import json
 from pathlib import Path
@@ -279,14 +279,10 @@ class StreamingDraftWorker:
             self.failed_event.set()
             self.on_status("实时英文草稿未启用；Whisper最终识别继续：" + str(exc))
             return
-        stream = None
-        identity = None
-        origin = 0
-        latest = ""
-        until = 0
-        lookback = np.empty(0, dtype=np.float32)
-        last_voice = None
-        latest_generation = -1
+        # One recognizer/model, independent online encoder state for each
+        # device/phase. Alternating 100-ms mic and loopback blocks must never
+        # reset the other person's sentence or replay their acoustic history.
+        states = OrderedDict()
         while True:
             with self._condition:
                 self._condition.wait_for(lambda: self._blocks or self.finished.is_set() or self.failed_event.is_set(), .3)
@@ -297,6 +293,13 @@ class StreamingDraftWorker:
                 audio, metadata, submitted = self._blocks.popleft()
                 self._queued_samples -= len(audio)
             key = (metadata.get("stream_id"), metadata.get("capture_context"))
+            state = states.get(key)
+            if state is None:
+                stream, identity, origin, latest, until = None, None, 0, "", 0
+                lookback, last_voice, latest_generation = np.empty(0, dtype=np.float32), None, -1
+            else:
+                (stream, identity, origin, latest, until,
+                 lookback, last_voice, latest_generation) = state
             start = int(metadata.get("start_sample", until))
             speech_active = metadata.get("speech_active")
             new_voice_after_silence = bool(speech_active and last_voice is not None and start - last_voice > 2.4 * RATE)
@@ -344,10 +347,17 @@ class StreamingDraftWorker:
                                "start_sample": lower, "end_sample": until,
                                "text_end_sample": max((word["end"] for word in draft_words), default=lower),
                                "draft_words": draft_words, "commit_generation": generation}
+                    if metadata.get("input_source"):
+                        context["input_source"] = metadata["input_source"]
                     self.on_text("partial", text, context)
                     self.on_metrics({"draft_backend": self.backend + "_cpu", "draft_audio_end_seconds": round(until / RATE, 3),
                                      "draft_queue_seconds": round(started - submitted, 4),
                                      "draft_decode_seconds": round(time.perf_counter() - started, 4)})
+                states[key] = (stream, identity, origin, latest, until,
+                               lookback, last_voice, latest_generation)
+                states.move_to_end(key)
+                while len(states) > 8:
+                    states.popitem(last=False)
             except Exception as exc:
                 self.failure = str(exc)
                 self.failed_event.set()

@@ -74,18 +74,31 @@ class SpeechWorker:
         self.thread: threading.Thread | None = None
         self._condition = threading.Condition()
         self._finals = deque()
-        self._partial = None
+        self._partials = {}
         self._working = False
+        self._working_source = None
         self._queued_samples = 0
         self._drain = True
         self._revision = 0
+        self._source_revisions = {}
         self._committed_until: dict[str, int] = {}
         self.actual_device = ""
 
     @property
     def pending(self) -> int:
         with self._condition:
-            return len(self._finals) + int(self._partial is not None) + int(self._working)
+            return len(self._finals) + len(self._partials) + int(self._working)
+
+    @staticmethod
+    def _source(metadata):
+        return metadata.get("input_source") or "loopback"
+
+    def pending_for_source(self, source: str) -> int:
+        """Own microphone work must not hold a remote question's endpoint open."""
+        with self._condition:
+            return (sum(self._source(item[2]) == source for item in self._finals)
+                    + int(source in self._partials)
+                    + int(self._working and self._working_source == source))
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -101,7 +114,7 @@ class SpeechWorker:
             self.on_status("识别器已停止接收；本段音频未入队，请先完成采集尾段再停止识别。")
             return False
         metadata = {key: getattr(audio, key) for key in
-                    ("start_sample", "commit_start_sample", "commit_end_sample", "stream_id", "hard_cut", "capture_context", "speech_active")
+                    ("start_sample", "commit_start_sample", "commit_end_sample", "stream_id", "hard_cut", "capture_context", "speech_active", "input_source")
                     if getattr(audio, key, None) is not None}
         if kind == "stream":
             return bool(self.streaming and self.streaming.submit(audio, metadata))
@@ -109,9 +122,11 @@ class SpeechWorker:
         if not audio.size:
             return False
         with self._condition:
+            source = self._source(metadata)
             if kind == "partial":
-                if not self._finals:
-                    self._partial = (kind, audio, metadata, self._revision, time.perf_counter())
+                if not any(self._source(item[2]) == source for item in self._finals):
+                    self._partials[source] = (kind, audio, metadata,
+                        self._source_revisions.get(source, 0), time.perf_counter())
             else:
                 if self._queued_samples + audio.size > 120 * 16000:
                     self.failure = "识别积压超过120秒，已停止采集；请更换较快模型后重新开始。"
@@ -119,9 +134,11 @@ class SpeechWorker:
                     self.on_status("Whisper 处理失败：" + self.failure)
                     self._condition.notify_all()
                     return False
-                self._partial = None
+                self._partials.pop(source, None)
                 self._revision += 1
-                self._finals.append(("final", audio, metadata, self._revision, time.perf_counter()))
+                self._source_revisions[source] = self._source_revisions.get(source, 0) + 1
+                self._finals.append(("final", audio, metadata,
+                    self._source_revisions[source], time.perf_counter()))
                 self._queued_samples += audio.size
             self._condition.notify_all()
         return True
@@ -137,7 +154,7 @@ class SpeechWorker:
             self.streaming.stop(drain=False)  # Drafts never own the final tail.
         with self._condition:
             self._drain = bool(drain)
-            self._partial = None
+            self._partials.clear()
             self._revision += 1
             if not drain and self._finals:
                 self.on_status(f"已明确取消 {len(self._finals)} 段排队的最终识别。")
@@ -305,7 +322,7 @@ class SpeechWorker:
         while True:
             with self._condition:
                 self._condition.wait_for(
-                    lambda: bool(self._finals) or self._partial is not None or self.finished.is_set() or self.failed_event.is_set(),
+                    lambda: bool(self._finals) or bool(self._partials) or self.finished.is_set() or self.failed_event.is_set(),
                     timeout=0.3)
                 stopping = self.finished.is_set() or self.failed_event.is_set()
                 if stopping and (not self._drain or not self._finals):
@@ -313,12 +330,13 @@ class SpeechWorker:
                 if self._finals:
                     kind, audio, metadata, revision, submitted = self._finals.popleft()
                     self._queued_samples -= audio.size
-                elif self._partial is not None:
-                    kind, audio, metadata, revision, submitted = self._partial
-                    self._partial = None
+                elif self._partials:
+                    key = next(iter(self._partials))
+                    kind, audio, metadata, revision, submitted = self._partials.pop(key)
                 else:
                     continue
                 self._working = True
+                self._working_source = self._source(metadata)
             started = time.perf_counter()
             try:
                 segments, _ = model.transcribe(
@@ -338,6 +356,8 @@ class SpeechWorker:
                            "end_sample": metadata.get("commit_end_sample"),
                            "hard_cut": bool(metadata.get("hard_cut")),
                            "words": list(self._decoded_words)} if metadata else ""
+                if isinstance(context, dict) and metadata.get("input_source"):
+                    context["input_source"] = metadata["input_source"]
                 if kind == "final" and (rejected or isinstance(context, dict)):
                     # A rejected segment inside an otherwise accepted chunk
                     # must not silently bridge a missing question condition.
@@ -346,14 +366,16 @@ class SpeechWorker:
                     if not isinstance(context, dict):
                         context = {}
                     context["recognition_gap"] = bool(rejected)
-                stale = kind == "partial" and (revision != self._revision or self.finished.is_set())
+                stale = kind == "partial" and (revision != self._source_revisions.get(self._source(metadata), 0)
+                                                or self.finished.is_set())
                 if transcript and not stale:
                     if (kind == "partial" and self.streaming is not None
                             and self.streaming.ready_event.is_set() and not self.streaming.failed_event.is_set()):
                         # The CPU streaming thread splices a revised Whisper
                         # prefix into its newer live tail using source clocks.
                         self.streaming.refine(metadata, self._decoded_words)
-                    elif kind == "final" and self.diarizer is not None and not self._speaker_failed:
+                    elif (kind == "final" and metadata.get("input_source") != "microphone"
+                          and self.diarizer is not None and not self._speaker_failed):
                         try:
                             # Word emission stays inside non-overlapping commit
                             # bounds. Speaker embeddings may also use decoded
@@ -401,13 +423,14 @@ class SpeechWorker:
                                  "asr_queue_seconds": round(started - submitted, 3),
                                  "asr_rejected_segments": rejected, "asr_stale_partial": stale,
                                  "asr_result_kind": "stale" if stale else kind if transcript else "empty_commit" if word_timed and not rejected else "rejected"})
-                if kind == "final" and self.diarizer is not None:
+                if kind == "final" and metadata.get("input_source") != "microphone" and self.diarizer is not None:
                     self.on_metrics(dict(self.diarizer.last_metrics))
             except Exception as exc:
                 self.on_status(f"转写出错：{exc}")
             finally:
                 with self._condition:
                     self._working = False
+                    self._working_source = None
         if self.diarizer is not None and not self._speaker_failed:
             finalize = getattr(self.diarizer, "finalize_pending", None)
             if finalize is not None:

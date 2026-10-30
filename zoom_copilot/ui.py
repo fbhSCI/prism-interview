@@ -655,6 +655,8 @@ class CopilotWindow(QMainWindow):
     import_requested = Signal(list)
     clear_requested = Signal()
     refresh_devices_requested = Signal()
+    input_source_changed = Signal(str)
+    prepare_speech_requested = Signal()
     check_models_requested = Signal()
     install_translation_requested = Signal()
     install_speaker_requested = Signal()
@@ -672,7 +674,7 @@ class CopilotWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Prism Interview · 0.4.0")
+        self.setWindowTitle("Prism Interview · 0.4.1")
         self.setWindowIcon(_brand_icon())
         self.setMinimumSize(1120, 720)
         self.resize(1500, 980)
@@ -684,7 +686,9 @@ class CopilotWindow(QMainWindow):
         self._session_api_keys: dict[str, str] = {}
         self._session_api_bases: dict[str, str] = {}
         self._session_answer_models: dict[str, str] = {}
-        self._last_provider = "ollama"
+        self._input_source = "loopback"
+        self._device_lists = {}
+        self._last_provider = "qwen"
         self._api_endpoint_identity = ""
         self._interview_phase = "qa"
         self._listening = False
@@ -891,38 +895,59 @@ class CopilotWindow(QMainWindow):
         controls.addLayout(footer)
         self.interview_controls_panel.hide()
         capture = _frame("captureBar")
-        row = QHBoxLayout(capture)
-        row.setContentsMargins(16, 13, 14, 13)
+        capture_layout = QVBoxLayout(capture)
+        capture_layout.setContentsMargins(16, 11, 14, 11)
+        capture_layout.setSpacing(8)
+        row = QHBoxLayout()
+        capture_layout.addLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
         audio_group = QVBoxLayout()
         audio_group.setSpacing(2)
         audio_group.addWidget(_label("音频输入", "sectionEyebrow"))
-        audio_group.addWidget(_label("系统输出回环", "muted"))
+        self.input_source_hint = _label("听面试官／播放声", "muted")
+        audio_group.addWidget(self.input_source_hint)
         row.addLayout(audio_group)
+        self.input_source_select = _combo([("会议／电脑声音", "loopback"), ("麦克风／耳麦", "microphone"), ("双方同时识别", "both")])
+        self.input_source_select.setMinimumWidth(155)
+        self.input_source_select.setToolTip("会议／电脑声音：识别 Zoom 对方或视频的播放声。麦克风／耳麦：只听我说话。双方同时识别：分别选择会议播放设备和我的麦克风，我说的话只听译，不触发自动回答。切换后重新开始监听。")
+        self.input_source_select.currentIndexChanged.connect(self._input_source_selected)
+        row.addWidget(self.input_source_select)
         self.device_select = QComboBox()
         self.device_select.setMinimumWidth(180)
         self.device_select.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.device_select.setToolTip("选择 Zoom 的扬声器／耳机输出。不会采集自己的麦克风。")
         self.device_select.currentIndexChanged.connect(self._device_changed)
         row.addWidget(self.device_select, 1)
+        self.microphone_select = QComboBox()
+        self.microphone_select.setMinimumWidth(150)
+        self.microphone_select.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.microphone_select.setToolTip("双方同时识别：这里选择你说话用的麦克风／耳麦；左侧选择会议播放设备。")
+        self.microphone_select.currentIndexChanged.connect(self._microphone_device_changed)
+        self.microphone_select.hide()
+        row.addWidget(self.microphone_select, 1)
         refresh = _button("", "refresh")
         refresh.setFixedWidth(34)
-        refresh.setToolTip("刷新音频输出设备")
-        refresh.setAccessibleName("刷新音频输出设备")
+        refresh.setToolTip("刷新当前来源的设备")
+        refresh.setAccessibleName("刷新音频设备")
         refresh.clicked.connect(self.refresh_devices_requested.emit)
         row.addWidget(refresh)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        capture_layout.addLayout(row)
         self.start_button = _button("开始监听", "play", True)
         self.start_button.clicked.connect(self._start)
         row.addWidget(self.start_button)
         self.stop_button = _button("停止", "stop")
         self.stop_button.clicked.connect(self.stop_requested.emit)
         row.addWidget(self.stop_button)
+        row.addStretch()
         self.overlay_button = _button("浮动字幕")
         self.overlay_button.clicked.connect(self.show_subtitle_overlay)
         row.addWidget(self.overlay_button)
         self.capture_mode_select = _combo([("对方 1 人", "single_remote"), ("对方多人", "acoustic")])
         self.capture_mode_select.setMaximumWidth(130)
-        self.capture_mode_select.setToolTip("仅听 Zoom 远端，不采集本机麦克风；改变人数后重新开始监听。多人采用匿名声纹分组。")
+        self.capture_mode_select.setToolTip("仅选会议声音时不采集本机麦克风；可选远端一人或多人匿名分组。双方同时识别需另选麦克风，我的语音只听译。改变人数后重新开始监听。")
         self.capture_mode_select.currentIndexChanged.connect(self._quick_caption_mode_changed)
         row.addWidget(self.capture_mode_select)
         layout.addWidget(capture)
@@ -1439,9 +1464,13 @@ class CopilotWindow(QMainWindow):
             ("1 人（默认）", "single_remote"),
             ("多人（声纹分组）", "acoustic"),
         ])
-        self.caption_speaker_mode_select.setToolTip("仅识别 Zoom 对方的声音，不采集本机麦克风。1 人使用远端来源标签，不代表确认身份；多人按声纹匿名分组，可能有误。回环中的其他应用声音也会进入。切换后重新开始监听。")
+        self.caption_speaker_mode_select.setToolTip("只针对会议／电脑声音，其他应用播放声也会进入。1 人使用远端来源标签，不代表确认身份；多人按声纹匿名分组，可能有误。麦克风来源显示为我。切换后重新开始监听。")
         self.caption_speaker_mode_select.currentIndexChanged.connect(self._sync_caption_mode)
         form.addRow("对方人数", self.caption_speaker_mode_select)
+        self.prepare_speech_button = _button("下载／检查语音模型")
+        self.prepare_speech_button.setToolTip("下载本机英语识别模型；不会开始监听，也不会发送问题或调用云回答。")
+        self.prepare_speech_button.clicked.connect(self.prepare_speech_requested.emit)
+        form.addRow("首次准备", self.prepare_speech_button)
         self.speaker_diarization_checkbox = QCheckBox("本地声纹区分说话人（匿名分组）")
         self.speaker_diarization_checkbox.setToolTip("按声音特征分组，可能误认；不能识别 Zoom 昵称。只采集当前输出设备，不包括自己的麦克风。")
         form.addRow(self.speaker_diarization_checkbox)
@@ -1643,8 +1672,8 @@ class CopilotWindow(QMainWindow):
         self.page_subtitle.setText(subtitles[index])
 
     def _start(self) -> None:
-        if not self.device_select.currentData():
-            self.set_status("尚未选中音频输出设备。请先刷新设备。", "warning")
+        if not self.device_select.currentData() or (self._input_source == "both" and not self.microphone_select.currentData()):
+            self.set_status("请选择当前来源的音频设备；麦克风模式请选择耳麦或电脑麦克风。", "warning")
             return
         self._save_settings()
         self.start_requested.emit()
@@ -2096,7 +2125,51 @@ class CopilotWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: settle(True))
         QTimer.singleShot(0, settle)
 
+    def _audio_device_field(self, source=None):
+        return "microphone_id" if (source or self._input_source) == "microphone" else "speaker_id"
+
+    def _sync_input_source(self):
+        microphone = self._input_source == "microphone"
+        both = self._input_source == "both"
+        self.input_source_hint.setText("双方分开识别" if both else "听我说话 · 只听译" if microphone else "听面试官／播放声")
+        self.microphone_select.setVisible(both)
+        self.device_select.setToolTip("选择你说话时使用的耳麦／电脑麦克风；不会采集 Zoom 播放声。" if microphone else
+                                      "选择 Zoom 的扬声器／耳机输出；同设备中其他应用的播放声也会进入。")
+        self.capture_mode_select.setEnabled(not microphone)
+        if hasattr(self, "caption_speaker_mode_select"):
+            self.caption_speaker_mode_select.setEnabled(not microphone)
+
+    def _input_source_selected(self, *args):
+        source = _combo_value(self.input_source_select)
+        if source == self._input_source:
+            return
+        old_id = str(self.device_select.currentData() or "")
+        if old_id:
+            self._settings[self._audio_device_field()] = old_id
+        if self._input_source == "both" and self.microphone_select.currentData():
+            self._settings["microphone_id"] = str(self.microphone_select.currentData())
+        self._input_source = source
+        self._settings["input_source"] = source
+        primary = "microphone" if source == "microphone" else "loopback"
+        self.set_devices(self._device_lists.get(primary, []),
+                         str(self._settings.get(self._audio_device_field(primary), "")), source=primary)
+        if source == "both":
+            self.set_devices(self._device_lists.get("microphone", []),
+                             str(self._settings.get("microphone_id", "")), source="microphone")
+        self._sync_input_source()
+        self.input_source_changed.emit(source)
+
+    def _microphone_device_changed(self, index: int) -> None:
+        selected = str(self.microphone_select.currentData() or "")
+        if selected:
+            self._settings["microphone_id"] = selected
+        if hasattr(self, "provider_select"):
+            self._save_settings()
+
     def _device_changed(self, index: int) -> None:
+        selected = str(self.device_select.currentData() or "")
+        if selected:
+            self._settings[self._audio_device_field()] = selected
         if hasattr(self, "provider_select"):
             self._save_settings()
 
@@ -2328,7 +2401,9 @@ class CopilotWindow(QMainWindow):
             "follow_latest": self.follow_transcript.isChecked(),
             "interview_phase": self._interview_phase,
             "topmost": self.topmost_checkbox.isChecked(),
-            "speaker_id": str(self.device_select.currentData() or ""),
+            "input_source": self._input_source,
+            "speaker_id": str(self.device_select.currentData() or "") if self._input_source in ("loopback", "both") else str(self._settings.get("speaker_id", "")),
+            "microphone_id": str(self.device_select.currentData() or "") if self._input_source == "microphone" else str(self.microphone_select.currentData() or "") if self._input_source == "both" else str(self._settings.get("microphone_id", "")),
             "speech_threshold": self.threshold_input.value(),
             "caption_window_seconds": float(_combo_value(self.caption_window_select)),
             "caption_update_mode": _combo_value(self.caption_update_mode_select),
@@ -2366,16 +2441,17 @@ class CopilotWindow(QMainWindow):
         if "session_api_keys" in settings:
             self._session_api_keys = dict(settings.get("session_api_keys") or {})
         defaults = {
-            "provider": "ollama", "ollama_model": "qwen3:8b", "whisper_size": "small.en",
-            "asr_device": "auto", "compute_type": "int8_float16", "translation_engine": "argos", "auto_answer": True,
+            "provider": "qwen", "ollama_model": "qwen2.5:7b", "whisper_size": "large-v3-turbo",
+            "input_source": "loopback", "speaker_id": "", "microphone_id": "",
+            "asr_device": "auto", "compute_type": "int8_float16", "translation_engine": "qwen", "auto_answer": True,
             "translation_cloud_consent": False,
             "auto_save_sessions": False,
-            "translation_qwen_model": "qwen-flash",
+            "translation_qwen_model": "qwen3.8-flash",
             "translation_qwen_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "translation_timeout": 20.0,
             "interview_phase": "qa",
             "topmost": False, "speech_threshold": 0.007, "cloud_consent": False,
-            "share_evidence": False, "answer_model": "", "api_base_url": "", "api_key": "",
+            "share_evidence": True, "answer_model": "qwen3.8-flash", "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key": "",
             "answer_speed": "standard",
             "caption_window_seconds": 3.6,
             "caption_update_mode": "original",
@@ -2400,7 +2476,8 @@ class CopilotWindow(QMainWindow):
         controls = [self.provider_select, self.ollama_select, self.whisper_select,
                     self.asr_device_select, self.compute_select, self.auto_checkbox,
                     self.topmost_checkbox, self.cloud_checkbox, self.evidence_checkbox,
-                    self.device_select, self.translation_engine_select, self.answer_speed_select,
+                    self.device_select, self.microphone_select, self.input_source_select,
+                    self.api_base_input, self.api_key_input, self.answer_model_input, self.translation_engine_select, self.answer_speed_select,
                     self.free_quota_checkbox, self.qwen_paid_checkbox, self.brief_answer_checkbox, self.caption_window_select,
                     self.caption_update_mode_select,
                     self.speaker_diarization_checkbox, self.caption_speaker_mode_select, self.streaming_captions_checkbox,
@@ -2410,6 +2487,9 @@ class CopilotWindow(QMainWindow):
                     self.translation_cloud_checkbox, self.translation_qwen_model_input,
                     self.translation_qwen_base_input, self.translation_timeout_input]
         blockers = [QSignalBlocker(control) for control in controls]
+        source_changed = self._input_source != value["input_source"]
+        self._input_source = value["input_source"] if value["input_source"] in ("loopback", "microphone", "both") else "loopback"
+        _select_value(self.input_source_select, self._input_source)
         for control, key in [(self.provider_select, "provider"), (self.ollama_select, "ollama_model"),
                              (self.whisper_select, "whisper_size"), (self.asr_device_select, "asr_device"),
                              (self.compute_select, "compute_type"),
@@ -2449,24 +2529,48 @@ class CopilotWindow(QMainWindow):
         self._sync_caption_mode()
         self._sync_translation_settings()
         self.context_label.setToolTip(str(value["research_profile"] or ""))
-        if "speaker_id" in value:
-            _select_value(self.device_select, str(value["speaker_id"]))
+        device_id = str(value.get(self._audio_device_field(), ""))
+        if source_changed:
+            primary = "microphone" if self._input_source == "microphone" else "loopback"
+            self.set_devices(self._device_lists.get(primary, []), device_id, source=primary)
+            if self._input_source == "both":
+                self.set_devices(self._device_lists.get("microphone", []), str(value.get("microphone_id", "")), source="microphone")
+        elif self.device_select.findData(device_id) >= 0:
+            _select_value(self.device_select, device_id)
+        if self._input_source == "both" and self.microphone_select.findData(str(value.get("microphone_id", ""))) >= 0:
+            _select_value(self.microphone_select, str(value["microphone_id"]))
+        self._sync_input_source()
+        self.model_picker_button.setText("配置千问 API Key" if value["provider"] == "qwen" and not value["cloud_consent"] else "选择回答模型")
         del blockers
         self._provider_changed()
         self.set_interview_phase(value["interview_phase"])
         self._apply_topmost(bool(value["topmost"]))
 
-    def set_devices(self, devices: list[tuple[str, str]], selected_id: str = "") -> None:
-        previous = selected_id or str(self.device_select.currentData() or self._settings.get("speaker_id", ""))
-        blocker = QSignalBlocker(self.device_select)
-        self.device_select.clear()
+    def set_devices(self, devices: list[tuple[str, str]], selected_id: str = "", *, source=None) -> None:
+        source = source or ("microphone" if self._input_source == "microphone" else "loopback")
+        self._device_lists[source] = list(devices)
+        secondary = self._input_source == "both" and source == "microphone"
+        primary = "microphone" if self._input_source == "microphone" else "loopback"
+        if not secondary and source != primary:
+            return
+        widget = self.microphone_select if secondary else self.device_select
+        previous = selected_id or str(self._settings.get(self._audio_device_field(source), ""))
+        blocker = QSignalBlocker(widget)
+        widget.clear()
+        valid = {str(identifier) for identifier, _ in devices}
+        # A vanished saved device must not silently become a different input.
+        needs_choice = bool(previous and previous not in valid) or (source == "microphone" and not previous)
+        if needs_choice:
+            widget.addItem("原设备不可用，请重新选择" if previous else "请选择麦克风／耳麦", "")
         for identifier, title in devices:
-            self.device_select.addItem(str(title), str(identifier))
+            widget.addItem(str(title), str(identifier))
         if not devices:
-            self.device_select.addItem("未发现音频输出设备", "")
-        _select_value(self.device_select, previous)
+            widget.addItem("未发现麦克风设备" if source == "microphone" else "未发现音频输出设备", "")
+        if previous in valid:
+            _select_value(widget, previous)
         del blocker
-        self.start_button.setEnabled(bool(devices) and not self._listening)
+        ready = bool(self.device_select.currentData()) and (self._input_source != "both" or bool(self.microphone_select.currentData()))
+        self.start_button.setEnabled(ready and not self._listening)
 
     def append_transcript(self, entry_id: str, en: str, zh: str = "", partial: bool = False,
                           speaker_id=None, speaker_label=None, turn_id=None,
@@ -3308,9 +3412,11 @@ class CopilotWindow(QMainWindow):
         if listening and not self._listening:
             self._started_at = time.monotonic()
         self._listening = bool(listening)
-        self.start_button.setEnabled(not listening and bool(self.device_select.currentData()))
+        self.start_button.setEnabled(not listening and bool(self.device_select.currentData())
+                                     and (self._input_source != "both" or bool(self.microphone_select.currentData())))
         self.stop_button.setEnabled(listening)
         self.device_select.setEnabled(not listening)
+        self.microphone_select.setEnabled(not listening)
         self.live_chip.setText("正在监听" if listening else "未监听")
         self.live_chip.setObjectName("badge" if listening else "neutralBadge")
         self.live_chip.style().unpolish(self.live_chip)
@@ -3467,22 +3573,26 @@ def smoke_main() -> int:
     window = CopilotWindow()
     if args.smoke:
         window.resize(args.width, args.height)
-        window.set_devices([("demo-only", "界面演示 · 未连接真实音频")])
-        window.set_settings({"provider": "codex", "cloud_consent": True, "share_evidence": True, "auto_save_sessions": False})
-        window.set_answer_model("界面示例 · 自选模型")
+        window.set_settings({"provider": "qwen", "cloud_consent": True, "share_evidence": True,
+                             "auto_save_sessions": False, "input_source": "both",
+                             "speaker_id": "demo-output", "microphone_id": "demo-microphone"})
+        window.set_devices([("demo-output", "会议播放设备 · 界面示例")], "demo-output", source="loopback")
+        window.set_devices([("demo-microphone", "耳麦麦克风 · 界面示例")], "demo-microphone", source="microphone")
+        window.set_answer_model("千问 qwen3.8-flash · 界面示例")
+        window.set_translation_engine_status("qwen", "qwen3.8-flash", "界面示例")
         if args.page != "empty":
-            window.append_transcript("demo-1", "Tell me about a challenging project and your role.",
-                "请介绍一个有挑战的项目，以及你的具体职责。", speaker_id="speaker_1", speaker_label="面试官", turn_id="demo-t1")
-            window.append_transcript("demo-2", "How did you measure success?",
-                "你如何衡量项目是否成功？", speaker_id="speaker_1", speaker_label="面试官", turn_id="demo-t1",
-                raw_en="and um how did you measure success and what would you do differently next time")
+            window.append_transcript("demo-1", "What was your role in this project?",
+                "你在这个项目中承担什么工作？", speaker_id="speaker_1", speaker_label="对方 · 会议声音", turn_id="demo-t1")
+            window.append_transcript("demo-2", "I designed the validation process.",
+                "我设计了验证流程。", speaker_id="local-microphone", speaker_label="我 · 麦克风", turn_id="demo-t2",
+                raw_en="I um I designed the validation process")
             window.set_preparation_status("界面示例 · 2 份虚构资料 · 未连接音频或模型")
-            window.set_question("Tell me about a challenging project. What was your contribution, how did you measure success, and what would you improve?")
-            window.set_answer("In this example project, I was responsible for improving the reliability of a customer-facing service. I first clarified the main failure cases with the team, then introduced automated checks and a staged release process.\n\nI would support the outcome with the verified metrics from my project notes. Next time, I would involve users earlier so that reliability improvements also address their most important needs.",
-                "在这个示例项目中，我负责提升一项面向客户的服务的可靠性。我先与团队明确主要故障场景，再引入自动检查和分阶段发布流程。\n\n我会引用项目记录中经过核实的指标来说明成果。下一次，我会更早邀请用户参与，让可靠性改进同时解决他们最关心的问题。",
-                "请介绍一个有挑战的项目，说明你的贡献、衡量成果的方法与改进思路。",
-                [{"name": "示例 · Project notes.pdf", "page": 1, "text": "仅用于界面演示的虚构资料。候选人负责可靠性改进、自动检查和分阶段发布。此示例不代表真实检索结果或模型表现。"}],
-                question_en="Tell me about a challenging project. What was your contribution, how did you measure success, and what would you improve?")
+            window.set_question("What was your role in this project?")
+            window.set_answer("In the project described in my notes, I led the reliability work. I clarified the main failure cases with the team, then introduced automated checks and a staged release process.\n\nMy contribution was the validation workflow. The project notes include the checks I used and their limits, which I can explain in more detail.",
+                "在项目记录描述的工作中，我负责可靠性改进。我与团队明确主要故障场景，然后引入自动检查和分阶段发布流程。\n\n我的具体贡献是验证流程。项目笔记中记录了我使用的检查方法及其局限，我可以进一步说明这些细节。",
+                "你在这个项目中承担什么工作？",
+                [{"name": "示例 · Project notes.pdf", "page": 1, "text": "仅用于界面演示的虚构资料。候选人负责可靠性改进、验证流程、自动检查和分阶段发布。此示例不代表真实检索结果或模型表现。"}],
+                question_en="What was your role in this project?")
             window.set_answer(en=window._answer_en, zh=window._answer_zh,
                 question_en=window._answer_question_en, question_zh=window._answer_question_zh,
                 answer_pairs=[{"id": str(i), "en": en, "zh": zh}
@@ -3497,6 +3607,16 @@ def smoke_main() -> int:
     window.show()
     if args.smoke:
         def capture():
+            if args.page == "session":
+                window._reading_size_timer.stop()
+                # Showcase an available reading layout: the complete current
+                # question remains in the answer panel, leaving both speakers
+                # fully visible without a duplicate question editor below.
+                window.reading_docks["question"].hide()
+                app.processEvents()
+                window._timeline_position_timer.stop()
+                window._timeline_finish_timer.stop()
+                window.transcript_scroll.verticalScrollBar().setValue(0)
             destination = Path(args.smoke).resolve()
             destination.parent.mkdir(parents=True, exist_ok=True)
             if not window.grab().save(str(destination)):

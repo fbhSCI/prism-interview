@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QMessageBox, QDialog,
 
 from .answers import AnswerService
 from .codex_client import AnswerCancelled
-from .audio import AudioCapture, speaker_loopbacks
+from .audio import AudioCapture, DualAudioCapture, input_devices, speaker_loopbacks
 from .config import Preferences, app_dir
 from .knowledge import KnowledgeBase
 from .runtime import default_model_cache
@@ -92,6 +92,10 @@ class CopilotController:
         self._session = 0
         self._phase_epoch = 0
         self._capture_started = False
+        self._capture_error_handled = False
+        self._device_refresh_generation = 0
+        self._caption_active_source = "loopback"
+        self._caption_source_states = {}
         self._translation_ready = False
         self._restoration_ready = False
         self._listen_pref = replace(self.pref)
@@ -114,6 +118,8 @@ class CopilotController:
         self._session_dirty = False
         self._partial_id = None
         self._partial_text = ""
+        self._partial_clock = None
+        self._partial_text_end_sample = 0
         self.assembler = QuestionAssembler(silence_seconds=self.pref.auto_endpoint_seconds)
         self.caption_turn = CaptionTurn()
         self._caption_sources = {}
@@ -157,8 +163,11 @@ class CopilotController:
         window.import_requested.connect(self.import_documents)
         window.clear_requested.connect(self.clear_documents)
         window.refresh_devices_requested.connect(self.refresh_devices)
+        window.input_source_changed.connect(self.change_input_source)
         window.check_models_requested.connect(self.check_models)
         window.install_translation_requested.connect(self.prepare_translation)
+        if hasattr(window, "prepare_speech_requested"):
+            window.prepare_speech_requested.connect(self.prepare_speech_models)
         if hasattr(window, "install_speaker_requested"):
             window.install_speaker_requested.connect(self.prepare_speaker)
         window.export_requested.connect(self.export_text)
@@ -302,7 +311,7 @@ class CopilotController:
         self._live_data = {}
         self.window.set_live_translation('')
         self._question_uncertain = False
-        self.caption_turn.seal()
+        self._seal_all_caption_sources()
         self._partial_id = None
         self._partial_text = ""
         self.pref.interview_phase = phase
@@ -336,7 +345,7 @@ class CopilotController:
         self._awaiting_actual_question = False
         self._live_token += 1
         self._live_data = {}
-        self.caption_turn.seal()
+        self._seal_all_caption_sources()
         self._partial_id = None
         self._question_uncertain = False
         self.window.set_question("")
@@ -344,9 +353,28 @@ class CopilotController:
         self.window.set_live_caption("")
         self.window.set_status("已开始下一题。短暂停顿会保留并补充同一个问题。")
 
+    def change_input_source(self, source):
+        if source not in ("loopback", "microphone", "both"):
+            return
+        active = self.listening or self.preparing or self.stopping
+        if active:
+            # Finish the old streams first. Never combine old device audio with
+            # the new source or automatically resume recording after a switch.
+            self.stop_listening(drain=True)
+        self.save_settings(self.window.get_settings())
+        self.refresh_devices()
+        self.window.set_status("输入来源已更改。正在保留原收音尾句；结束后选择新设备并点击开始监听。" if active else
+                               "请选择新来源的设备，再点击开始监听；麦克风中的我只听译，不自动作答。")
+
     def refresh_devices(self):
+        self._device_refresh_generation += 1
+        generation = self._device_refresh_generation
+        selected = self.pref.input_source
+        sources = ("loopback", "microphone") if selected == "both" else (selected,)
         def work():
-            self.post("devices", speaker_loopbacks())
+            for source in sources:
+                self.post("devices", {"generation": generation, "input_source": source,
+                                      "devices": input_devices(source)})
         self.background(work, "PrismDevices")
 
     def refresh_docs(self):
@@ -388,12 +416,30 @@ class CopilotController:
             self.post("documents", (0, []))
         self.background(work, "PrismClear")
 
+    def prepare_speech_models(self):
+        if self.listening or self.preparing or self.stopping:
+            self.window.set_status("请先停止监听，再下载或检查语音模型。", "warning")
+            return
+        values = self.window.get_settings()
+        for key in ("model_cache_dir", "whisper_size", "streaming_captions"):
+            if key in values:
+                setattr(self.pref, key, values[key])
+        self.pref.__post_init__()
+        self.pref.save()
+        from .model_setup import show_model_setup
+        show_model_setup(self.window, self.pref)
+
     def start_listening(self):
+        if getattr(getattr(self.window, "_model_setup_dialog", None), "active", False):
+            self.window.set_status("语音模型仍在准备，请完成后再开始监听。", "warning")
+            return
         if self.listening or self.preparing or self.stopping:
             return
         self.save_settings(self.window.get_settings())
-        if not self.pref.speaker_id:
-            self.window.set_status("请选择与 Zoom Speaker 相同的系统输出设备。", "warning")
+        selected_id = self.pref.microphone_id if self.pref.input_source == "microphone" else self.pref.speaker_id
+        if (not selected_id or not self.window.device_select.currentData()
+                or (self.pref.input_source == "both" and (not self.pref.microphone_id or not self.window.microphone_select.currentData()))):
+            self.window.set_status("请选择当前来源的有效设备；双方同时识别需要会议输出和麦克风各一个。", "warning")
             return
         self._session += 1
         self._phase_epoch += 1
@@ -403,6 +449,10 @@ class CopilotController:
         if self.pref.provider=='codex' and self.pref.cloud_consent and not self.busy:
             self.check_models()
         self._capture_started = False
+        self._capture_error_handled = False
+        self._caption_source_states.clear()
+        self._caption_active_source = "loopback"
+        self.caption_turn = CaptionTurn()
         self.assembler.reset()
         self.intent.reset()
         self.question_context.reset()
@@ -485,15 +535,62 @@ class CopilotController:
         self.speech.start()
 
     def _make_diarizer(self, cache):
-        if self._single_remote_source() or not self.pref.speaker_diarization:
+        if self._microphone_source() or self._single_remote_source() or not self.pref.speaker_diarization:
             return None
         from .speaker import OnlineSpeakerDiarizer
         return OnlineSpeakerDiarizer(cache)
 
+    def _capture_preferences(self):
+        return self._listen_pref if (self.listening or self.preparing or self.stopping) else self.pref
+
+    def _microphone_source(self):
+        return self._capture_preferences().input_source == "microphone"
+
     def _single_remote_source(self):
-        """Use the capture session's explicit source assumption until drained."""
-        prefs = self._listen_pref if (self.listening or self.preparing or self.stopping) else self.pref
-        return prefs.caption_speaker_mode == "single_remote"
+        """Single source is an explicit selection, never a voice identity claim."""
+        prefs = self._capture_preferences()
+        return prefs.input_source != "microphone" and prefs.caption_speaker_mode == "single_remote"
+
+    _CAPTION_SOURCE_FIELDS = ("caption_turn", "_caption_acoustic_turn", "_caption_source_clock",
+        "_caption_source_end", "_caption_last_final_at", "_partial_id", "_partial_text",
+        "_partial_clock", "_partial_text_end_sample")
+
+    def _store_caption_source(self):
+        self._caption_source_states[self._caption_active_source] = {
+            field: getattr(self, field) for field in self._CAPTION_SOURCE_FIELDS}
+
+    def _activate_caption_source(self, source):
+        if source == self._caption_active_source:
+            return
+        self._store_caption_source()
+        state = self._caption_source_states.setdefault(source, {
+            "caption_turn": CaptionTurn(), "_caption_acoustic_turn": None,
+            "_caption_source_clock": None, "_caption_source_end": None,
+            "_caption_last_final_at": None, "_partial_id": None, "_partial_text": "",
+            "_partial_clock": None, "_partial_text_end_sample": 0})
+        for field, value in state.items():
+            setattr(self, field, value)
+        self._caption_active_source = source
+
+    def _seal_all_caption_sources(self):
+        self.caption_turn.seal()
+        self._partial_id, self._partial_text = None, ""
+        self._partial_clock, self._partial_text_end_sample = None, 0
+        for state in self._caption_source_states.values():
+            state["caption_turn"].seal()
+            state["_partial_id"], state["_partial_text"] = None, ""
+            state["_partial_clock"], state["_partial_text_end_sample"] = None, 0
+
+    def _seal_question_caption(self):
+        if self._caption_active_source == "loopback":
+            self.caption_turn.seal()
+        elif "loopback" in self._caption_source_states:
+            self._caption_source_states["loopback"]["caption_turn"].seal()
+
+    def _remote_partial_id(self):
+        if self._caption_active_source == "loopback":
+            return self._partial_id
+        return self._caption_source_states.get("loopback", {}).get("_partial_id")
 
     def _caption_inactivity(self, context, now):
         # Source clocks are authoritative when available: slow ASR processing
@@ -529,6 +626,7 @@ class CopilotController:
             standard_window = False
         if (getattr(prefs, 'caption_update_mode', 'original') == 'responsive'
                 and prefs.caption_speaker_mode == 'single_remote'
+                and prefs.input_source == 'loopback'
                 and prefs.whisper_size == 'large-v3-turbo' and standard_window
                 and prefs.compute_type == 'int8_float16'
                 and getattr(self.speech, 'actual_device', '') == 'cuda'):
@@ -542,16 +640,21 @@ class CopilotController:
             return
         self._capture_started = True
         worker = self.speech
-        self.audio = AudioCapture(
-            self._listen_pref.speaker_id, float(self._listen_pref.speech_threshold),
+        source = self._listen_pref.input_source
+        capture_type = DualAudioCapture if source == "both" else AudioCapture
+        selected_id = self._listen_pref.microphone_id if source == "microphone" else self._listen_pref.speaker_id
+        arguments = (selected_id, self._listen_pref.microphone_id) if source == "both" else (selected_id,)
+        options = {} if source == "both" else {"input_source": source}
+        self.audio = capture_type(
+            *arguments, float(self._listen_pref.speech_threshold),
             lambda kind, wav: worker.submit(kind, wav),
             lambda level: self.post("level", (session, level)),
             lambda message: self.post("status", (session, message)),
-            lambda active: self.post("voice", session) if active else None,
+            lambda active: self.post("voice", session) if active and source != "microphone" else None,
             context=self._phase_epoch, maximum_sec=self._listen_pref.caption_window_seconds,
             streaming=self._listen_pref.streaming_captions,
             on_ready=lambda:self.post('capture_ready',session),
-            **self._capture_confirmation_options())
+            **options, **self._capture_confirmation_options())
         self.audio.start()
 
     def stop_listening(self, drain=True):
@@ -602,7 +705,7 @@ class CopilotController:
         self._partial_id = None
         self._partial_text = ""
         self.assembler.reset()
-        self.caption_turn.seal()
+        self._seal_all_caption_sources()
         self.window.set_listening(False)
         self.window.set_metrics({"audio_level": 0})
         self.window.set_status("收音已停止；本次文字仍在内存中，可手动导出。")
@@ -722,6 +825,10 @@ class CopilotController:
         if not isinstance(end, (int, float)):
             return
         self._last_final_end[clock] = max(self._last_final_end.get(clock, 0), end)
+        # The latest visible card may belong to the microphone. Retire this
+        # input's old draft by its own lexical watermark, independently of it.
+        if (self._partial_clock == clock and self._partial_text_end_sample <= self._last_final_end[clock]):
+            self._partial_id, self._partial_text = None, ""
         live = self._live_data
         if (live.get('clock') == clock and
                 live.get('text_end_sample', 0) <= self._last_final_end[clock]):
@@ -810,12 +917,16 @@ class CopilotController:
         # In-memory equality only. Never export or log this tuple: it includes
         # endpoint-scoped session credentials so a changed key cannot reuse work.
         names = ('provider', 'answer_model', 'answer_speed', 'cloud_consent',
-                 'auto_answer', 'interview_phase', 'speaker_id', 'caption_speaker_mode',
+                 'auto_answer', 'interview_phase', 'input_source', 'speaker_id', 'microphone_id', 'caption_speaker_mode',
                  'share_evidence', 'api_base_url', 'api_key', 'session_api_keys',
                  'qwen_region', 'free_quota_confirmed', 'qwen_paid_usage_authorized',
                  'answer_timeout', 'research_profile', 'candidate_profile',
                  'prefer_prepared_answers', 'max_answer_words', 'brief_answer', 'top_k')
-        return tuple((name, json.dumps(getattr(self.pref, name), sort_keys=True,
+        # Default Qwen endpoints/models are canonicalized by Preferences.
+        # The empty "automatic official endpoint" and its explicit equivalent
+        # must not discard a correctly prepared answer during save_settings.
+        canonical = replace(self.pref)
+        return tuple((name, json.dumps(getattr(canonical, name), sort_keys=True,
                                       ensure_ascii=False)) for name in names)
 
     def _answer_prefetch_scope(self):
@@ -853,7 +964,7 @@ class CopilotController:
         At most one hidden worker and two attempts per question are allowed.
         Every result still needs a real endpoint and an exact source/scope match.
         """
-        if (self._closed or not self.listening or self.busy or self._requests
+        if (self._closed or self._capture_error_handled or self._microphone_source() or not self.listening or self.busy or self._requests
                 or self.pref.provider != 'qwen' or not self.pref.cloud_consent
                 or not self.pref.auto_answer or self.pref.interview_phase != 'qa'
                 or self._question_uncertain or self._semantic_response):
@@ -985,26 +1096,41 @@ class CopilotController:
             self.window.set_status('问题有补充，正在保留完整问题；说完后会自动重新回答。')
 
     def on_transcript(self, kind, english, context=None):
+        source = context.get("input_source") if isinstance(context, dict) else None
+        if source not in ("loopback", "microphone"):
+            source = "microphone" if self._microphone_source() else "loopback"
+        self._activate_caption_source(source)
+        try:
+            self._on_source_transcript(kind, english, context)
+        finally:
+            self._store_caption_source()
+
+    def _on_source_transcript(self, kind, english, context=None):
         if kind == "final" and str(english).strip():
             self._session_dirty = True
         epoch = context.get("phase_epoch") if isinstance(context, dict) else None
         timed = bool(context.get("word_timed")) if isinstance(context, dict) else False
-        single_remote = self._single_remote_source()
+        microphone = self._caption_active_source == "microphone"
+        single_remote = self._single_remote_source() and not microphone
         speaker = ({key: context.get(key) for key in ("speaker_id", "speaker_label", "turn_id")}
                    if isinstance(context, dict) else {})
         speaker["speaker_label"] = self._speaker_aliases.get(str(speaker.get("speaker_id")),
             speaker.get("speaker_label") or "发言者待补认")
         speaker["speaker_status"] = context.get("speaker_status") if isinstance(context,dict) else None
-        if single_remote:
+        if microphone:
+            speaker = {"speaker_id": "local-microphone", "speaker_label": "我 · 麦克风",
+                       "turn_id": f"mic-source-{self._session}-{epoch if epoch is not None else self._phase_epoch}",
+                       "speaker_status": "source"}
+        elif single_remote:
             # The user selected a single remote SOURCE. Do not infer or claim
             # acoustic identity, and do not allow short-window diarizer guesses
             # to relabel it. Other system-output audio shares this source too.
-            speaker = {"speaker_id": None, "speaker_label": "Zoom远端（单一远端模式）",
+            speaker = {"speaker_id": None, "speaker_label": "对方 · 会议声音",
                        "turn_id": f"zoom-source-{self._session}-{epoch if epoch is not None else self._phase_epoch}",
                        "speaker_status": "source"}
         elif str(speaker.get("turn_id")) in self._manual_turns:
             speaker.update(self._manual_turns[str(speaker["turn_id"])])
-        if isinstance(context,dict) and not single_remote:
+        if isinstance(context,dict) and not single_remote and not microphone:
             for revision in context.get("speaker_revisions",[]):
                 self._apply_speaker_revision(revision)
         if epoch is not None and epoch != self._phase_epoch:
@@ -1027,11 +1153,13 @@ class CopilotController:
                     self.window.set_live_translation('')
             return
         if kind == "rejected":
-            self._cancel_answer_prefetch()
+            if not microphone:
+                self._cancel_answer_prefetch()
             identity = self.caption_turn.identity
             committed = self.caption_turn.committed
-            self._question_uncertain = True
-            self._question_intro_tail = ''  # Never join a new intro across missing audio.
+            if not microphone:
+                self._question_uncertain = True
+                self._question_intro_tail = ''  # Never bridge missing remote audio.
             self._partial_id = None
             self._partial_text = ""
             if identity:
@@ -1059,7 +1187,7 @@ class CopilotController:
                     self._caption_sources.pop(identity, None)
                     self.window.remove_transcript(identity)
                     self.caption_turn.seal()
-            if self._question_uncertain:
+            if not microphone and self._question_uncertain:
                 self.window.set_status("刚才一段未通过识别确认；请核对问题后手动生成，或等待下一句。", "warning")
             return
         if not str(english).strip():
@@ -1108,19 +1236,21 @@ class CopilotController:
         if kind == "partial":
             self._partial_id = identity
             self._partial_text = combined
+            self._partial_clock = (context.get("stream_id"), epoch) if isinstance(context, dict) else None
+            self._partial_text_end_sample = context.get("text_end_sample", context.get("end_sample", 0)) if isinstance(context, dict) else 0
             old=self._live_data
             keep_zh=old.get("zh","") if old.get("token")==self._live_token and cleaned.startswith(old.get("source","\0")) else ""
             self._live_data={"en":display,"source":cleaned,"raw":combined,"zh":keep_zh,"token":self._live_token,
-                "entry_id":identity,"speaker_label":speaker["speaker_label"] if single_remote else "当前发言 · 待补认",
+                "entry_id":identity,"speaker_label":speaker["speaker_label"] if single_remote or microphone else "当前发言 · 待补认",
                 "state":"正在听译 · 词句会修订",
                 "clock":(context.get('stream_id'),epoch) if isinstance(context,dict) else None,
                 "text_end_sample":context.get('text_end_sample',context.get('end_sample',0)) if isinstance(context,dict) else 0}
-            if single_remote:
+            if single_remote or microphone:
                 self._live_data.update(speaker)
             self._publish_live()
             if self.pref.live_translation and self.translation and len(cleaned.split())>=2:
                 self.translation.submit_preview(("live",self._phase_epoch,self._live_token),cleaned)
-            if self.kb.passages and len(cleaned.split())>=7 and time.monotonic()-self._last_prefetch>1.2:
+            if not microphone and self.kb.passages and len(cleaned.split())>=7 and time.monotonic()-self._last_prefetch>1.2:
                 self._last_prefetch=time.monotonic()
                 self.background(lambda:self.preparation.search(self.kb,cleaned,self.pref.top_k),"PrismQuestionPrefetch")
             return
@@ -1155,6 +1285,11 @@ class CopilotController:
             self._transcripts.append({"id": identity, "en": display, "raw_en":combined, "zh": "",
                                       "translation_pending":translation_pending,
                                       "at": datetime.now().isoformat(timespec="seconds"), **speaker})
+        if microphone:
+            # My speech is readable/saved, but never becomes the interviewer's
+            # question, invalidates its integrity or starts an automatic answer.
+            self._queue_caption_translation(translation_key, cleaned, identity, combined)
+            return
         gap = bool(context.get('recognition_gap')) if isinstance(context, dict) else False
         self._recognition_gap_active = gap
         if gap:
@@ -1195,7 +1330,7 @@ class CopilotController:
 
     def _seal_semantic_question(self, *, confirmed_response=False):
         """Freeze a confirmed turn, independently of global voice/ASR activity."""
-        if self._semantic_response or not has_complete_direct_question(
+        if self._capture_error_handled or self._semantic_response or not has_complete_direct_question(
                 self.assembler.text, require_terminal=not confirmed_response):
             return False
         if self._question_uncertain:
@@ -1395,22 +1530,23 @@ class CopilotController:
                 self.request_answer(question, automatic=True)
 
     def auto_answer(self):
-        if not self.listening:
+        if not self.listening or self._capture_error_handled or self._microphone_source():
             return
         self._maybe_prefetch_answer()
         if (is_question_invitation(self.assembler.text)
                 or invitation_prefix_offset(self.assembler.text) is not None):
             return
-        pending = self.speech.pending if self.speech else 0
+        pending = (self.speech.pending_for_source("loopback") if hasattr(self.speech, "pending_for_source") else self.speech.pending) if self.speech else 0
+        partial_id = self._remote_partial_id()
         if self._question_uncertain:
             # A rejected middle/end must not be silently bridged by a later
             # accepted fragment. Retire that incomplete turn at real inactivity;
             # its question stays editable for an explicit manual retry.
             now = time.monotonic()
-            if (not pending and self._partial_id is None
+            if (not pending and partial_id is None
                     and now - max(self.assembler.last_voice, self.assembler.last_text) >= self.assembler.continuation_seconds):
                 self.assembler.consume()
-                self.caption_turn.seal()
+                self._seal_question_caption()
                 self._question_uncertain = False
                 self.window.set_status("本轮识别不完整，未自动回答；可核对当前问题后手动生成。", "warning")
             return
@@ -1418,7 +1554,7 @@ class CopilotController:
             # Retire recognition gaps above even for quoted/self-questions;
             # otherwise one old incomplete presentation can block later asks.
             return
-        if not self.assembler.ready(pending=pending) or self._partial_id is not None:
+        if not self.assembler.ready(pending=pending) or partial_id is not None:
             return
         if not (looks_like_question(self.assembler.text) or
                 has_complete_direct_question(self.assembler.text, require_terminal=False)):
@@ -1426,14 +1562,14 @@ class CopilotController:
             # context across ordinary pauses; only retire an idle statement.
             if time.monotonic() - max(self.assembler.last_voice, self.assembler.last_text) > 15:
                 self.assembler.consume()
-                self.caption_turn.seal()
+                self._seal_question_caption()
             return
         if self.pref.auto_answer and self.pref.interview_phase == "qa":
             question, _ = self.assembler.consume(retain=True)
             self.request_answer(question, automatic=True)
 
     def request_answer(self, question, automatic=False, *, endpoint="silence"):
-        if self._closed:
+        if self._closed or (automatic and (self._capture_error_handled or self._microphone_source())):
             return
         if not automatic:
             self._cancel_answer_prefetch()
@@ -1452,7 +1588,7 @@ class CopilotController:
         self.save_settings(self.window.get_settings())
         self.assembler.consume(retain=automatic)
         if not automatic:
-            self.caption_turn.seal()
+            self._seal_question_caption()
         self._question_uncertain = False
         if automatic and (self.pref.interview_phase != "qa" or not self.pref.auto_answer):
             return
@@ -1475,7 +1611,7 @@ class CopilotController:
         if automatic:
             # Silence alone is not a caption boundary. Only a real answer
             # dispatch ends the question card; presentation keeps its paragraph.
-            self.caption_turn.seal()
+            self._seal_question_caption()
         self._question_raw_by_request[identity]=raw
         self._question_packets[identity]=packet
         requested_at = time.perf_counter()
@@ -1933,18 +2069,42 @@ class CopilotController:
         except OSError as exc:
             self.window.set_status("导出失败：" + str(exc), "error")
 
+    def _mark_capture_failure(self):
+        self._capture_error_handled = True
+        self._question_uncertain = True
+        self._cancel_answer_prefetch()
+        self._requests = deque(item for item in self._requests if item[0] not in self._automatic_ids)
+        if self.busy and self._active in self._automatic_ids:
+            self._cancel.set()
+            self._discard_unfinished_answer()
+
     def pump(self):
         if self._closed:
             return
+        error_event = getattr(self.audio, "error_event", None)
+        if (error_event is not None and error_event.is_set() and not self._capture_error_handled
+                and not self.stopping):
+            self._mark_capture_failure()
+            self.stop_listening(drain=True)
+            self.window.set_status("输入设备已断开或收音失败，已停止采集；请检查两端设备后重新开始。", "error")
         for _ in range(250):
             try:
                 kind, data = self.events.get_nowait()
             except queue.Empty:
                 return
             if kind == "devices":
-                self.window.set_devices(data, self.pref.speaker_id)
-                if not self.pref.speaker_id and data:
-                    self.pref.speaker_id = data[0][0]
+                if isinstance(data, dict):
+                    if data.get("generation") != self._device_refresh_generation:
+                        continue
+                    source, devices = data["input_source"], data["devices"]
+                else:
+                    source, devices = "loopback", data
+                selected_id = self.pref.microphone_id if source == "microphone" else self.pref.speaker_id
+                self.window.set_devices(devices, selected_id, source=source)
+                if source == "loopback" and not self.pref.speaker_id and devices:
+                    self.pref.speaker_id = devices[0][0]
+                if self.preparing or self.stopping:
+                    self.window.start_button.setEnabled(False)
             elif kind == "asr_ready":
                 self._start_capture(data)
             elif kind == 'capture_ready':
@@ -2052,6 +2212,8 @@ class CopilotController:
                     continue
                 failure = message.startswith(("Whisper 加载失败：", "Whisper 处理失败：", "音频设备错误：", "翻译模型准备失败："))
                 if failure:
+                    if message.startswith("音频设备错误："):
+                        self._mark_capture_failure()
                     self.stop_listening()
                 self.window.set_status(message, "error" if failure else "info")
             elif kind in ("status_global", "error"):

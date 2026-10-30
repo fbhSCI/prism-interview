@@ -268,6 +268,7 @@ class CopilotWindowTests(unittest.TestCase):
         self.assertFalse(self.window.auto_checkbox.isEnabled())
 
     def test_cloud_catalog_keeps_blank_default_and_only_uses_real_identifiers(self):
+        self.window.set_settings({"provider": "codex", "answer_model": "", "api_base_url": ""})
         self.assertEqual(self.window.answer_model_input.count(), 0)
         self.assertEqual(self.window.get_settings()["answer_model"], "")
         self.window.set_answer_models([{"model": "actual-model-a"}, {"id": "actual-model-b"},

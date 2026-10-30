@@ -65,6 +65,7 @@ def test_model_workers_never_capture_dialog_or_qobject(monkeypatch):
 
 def test_qwen_test_panel_fits_short_screen_with_actions_always_visible():
     dialog = ModelPickerDialog(Preferences(provider="qwen", cloud_consent=True))
+    dialog.catalog_toggle.setChecked(True)
     dialog.test_panel.show()
     dialog.test_output.setPlainText("English answer.\n\n中文回答。" * 20)
     dialog.resize(900, 650)
@@ -288,7 +289,7 @@ def test_dialog_lists_all_actual_codex_models_and_filters_without_inference():
     def loader(prefs):
         calls.append(prefs.provider)
         return catalog()
-    dialog = ModelPickerDialog(Preferences(cloud_consent=True), catalog_loader=loader)
+    dialog = ModelPickerDialog(Preferences(provider="codex", cloud_consent=True), catalog_loader=loader)
     dialog.show()
     for _ in range(20):
         QTest.qWait(15)
@@ -375,7 +376,7 @@ def test_stale_catalog_does_not_replace_new_provider_selection():
         started.set()
         waiting.wait(1)
         return catalog()
-    dialog = ModelPickerDialog(Preferences(cloud_consent=True), catalog_loader=loader)
+    dialog = ModelPickerDialog(Preferences(provider="codex", cloud_consent=True), catalog_loader=loader)
     dialog.show()
     QTest.qWait(20)
     assert started.is_set()

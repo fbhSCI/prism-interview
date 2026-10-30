@@ -82,7 +82,7 @@ try {
     if ($IncludeGpuLibraries -and $CudaDirectory) {
         & (Join-Path $PSScriptRoot 'scripts\copy_cuda_runtime.ps1') -SourceDirectory $CudaDirectory -DestinationDirectory (Join-Path $bundle 'gpu')
     }
-    foreach ($filename in @('README_中文.md', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'start_windows.bat', 'export_runtime.ps1')) {
+    foreach ($filename in @('README_中文.md', 'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'start_windows.bat', 'export_runtime.ps1')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $filename) -Destination $bundle -Force
     }
     $calibrationWave = Join-Path $PSScriptRoot 'examples\calibration.wav'
@@ -125,13 +125,13 @@ for d in sorted(m.distributions(), key=lambda x: x.metadata.get('Name','').lower
         @'
 import pathlib,sys,zipfile
 root=pathlib.Path(sys.argv[1]); output=pathlib.Path(sys.argv[2])
-files=['run.py','README.md','README_中文.md','LICENSE','THIRD_PARTY_NOTICES.md','CONTRIBUTING.md','SECURITY.md','.gitignore',
+files=['run.py','README.md','README_中文.md','README.en.md','LICENSE','THIRD_PARTY_NOTICES.md','CONTRIBUTING.md','SECURITY.md','.gitignore','.gitattributes',
        'requirements.txt','requirements-translate.txt','requirements-gpu.txt','requirements-dev.txt',
        'install_windows.bat','start_windows.bat','install_translation_windows.bat',
        'setup_windows.ps1','build_windows.ps1','export_runtime.ps1','AGENTS.md','docs/.nojekyll']
-for folder in ('zoom_copilot','tests','docs','scripts','.github'):
+for folder in ('zoom_copilot','tests','docs','scripts','.github','installer'):
     files.extend(str(p.relative_to(root)) for p in (root/folder).rglob('*')
-                 if p.is_file() and p.suffix in {'.py','.md','.json','.html','.css','.js','.svg','.png','.yml','.yaml','.ps1','.txt','.ico'} and '__pycache__' not in p.parts)
+                 if p.is_file() and p.suffix in {'.py','.md','.json','.html','.css','.js','.svg','.png','.yml','.yaml','.ps1','.cmd','.txt','.ico'} and '__pycache__' not in p.parts)
 with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
     for item in sorted(set(files)):
         p=root/item

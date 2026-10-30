@@ -50,8 +50,8 @@ def test_capture_phase_change_flushes_old_audio_and_discards_old_preroll(monkeyp
             if self.index == 7:
                 capture.stop()
             return np.full((numframes, 1), old_value if self.index < 5 else 2.0, np.float32)
-    device = SimpleNamespace(isloopback=True, name="test", recorder=lambda **kwargs: Recorder())
-    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(get_microphone=lambda *args, **kwargs: device))
+    device = SimpleNamespace(id="test", isloopback=True, name="test", recorder=lambda **kwargs: Recorder())
+    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(all_microphones=lambda **kwargs: [device]))
     monkeypatch.setattr(audio_module, "Segmenter", lambda **kwargs: Segmenter(vad=False, **kwargs))
     import scipy.signal
     monkeypatch.setattr(scipy.signal, "resample_poly", lambda values, up, down: values[::down])
