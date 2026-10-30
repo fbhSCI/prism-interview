@@ -1,0 +1,4 @@
+# Translation uses the official Argos EN->ZH weights directly. No torch,
+# stanza or argostranslate package is needed. Model weights download separately.
+ctranslate2>=4.5,<5
+sentencepiece>=0.2,<0.3

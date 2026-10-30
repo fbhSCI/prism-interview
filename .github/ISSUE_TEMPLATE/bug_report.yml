@@ -1,0 +1,26 @@
+name: Bug report / 问题反馈
+description: Report a reproducible problem without private data.
+body:
+  - type: markdown
+    attributes:
+      value: Please do not include credentials, private transcripts, CVs or recordings. Use synthetic examples.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior / 预期与实际
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps / 复现步骤
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows, app version, GPU and model / 环境
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Synthetic example or redacted screenshot / 示例

@@ -1,0 +1,13 @@
+name: Feature request / 功能建议
+description: Describe a task and the improvement you need.
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What task would this help with? / 使用场景
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested behavior / 建议行为

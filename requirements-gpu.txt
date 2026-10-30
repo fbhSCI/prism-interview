@@ -1,0 +1,4 @@
+# Optional Windows CUDA 12 runtime DLLs; a working NVIDIA driver is required.
+# These wheels are not model weights and do not install a system CUDA toolkit.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.11.1.4
