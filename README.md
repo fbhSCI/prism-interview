@@ -22,8 +22,8 @@
 
 推荐 Windows 10/11 64 位、16 GB 内存和 NVIDIA RTX 显卡。CPU 也可使用，识别通常更慢。
 
-1. 在[下载页](https://github.com/fbhSCI/prism-interview/releases)的 **Assets** 中下载 **PrismInterview-0.4.1-Windows-Setup.zip**，完整解压。
-2. 双击 **安装PrismInterview.cmd**，按窗口提示安装。首次会下载所需运行文件；已有 0.4.0 的用户可选择旧目录复用运行库。完成后打开桌面 **Prism Interview 0.4.1**。**不需要 Python 或管理员权限。**
+1. 在[下载页](https://github.com/fbhSCI/prism-interview/releases)的 **Assets** 中下载 **PrismInterview-0.4.2-Windows-Setup.zip**，完整解压。
+2. 双击 **安装PrismInterview.cmd**，按窗口提示安装。首次会下载所需运行文件；已有 0.4.0 的用户可选择旧目录复用运行库。完成后打开桌面 **Prism Interview 0.4.2**。**不需要 Python 或管理员权限。**
 3. 点击 **配置千问 API Key**，按下一节填好密钥和授权。
 4. 在 **模型与设置** 点击 **下载／检查语音模型**，等待完成；已有模型可将“模型缓存”指向原模型文件夹后检查。
 5. 在 **面试资料库** 导入自己的材料，在 **模型与设置 → 面试背景** 填写方向、目标岗位和实际贡献。

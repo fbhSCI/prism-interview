@@ -21,7 +21,7 @@ Use it for technical interviews, research interviews and professional discussion
 
 Windows 10/11 x64, 16 GB RAM and an NVIDIA RTX GPU are recommended. CPU recognition is available with higher latency.
 
-1. **Download and install.** Open [Releases](https://github.com/fbhSCI/prism-interview/releases), expand Assets and download `PrismInterview-0.4.1-Windows-Setup.zip`. Extract the whole folder, run **安装PrismInterview.cmd**, then open **Prism Interview 0.4.1** from the desktop. Python and administrator access are not required.
+1. **Download and install.** Open [Releases](https://github.com/fbhSCI/prism-interview/releases), expand Assets and download `PrismInterview-0.4.2-Windows-Setup.zip`. Extract the whole folder, run **安装PrismInterview.cmd**, then open **Prism Interview 0.4.2** from the desktop. Python and administrator access are not required.
 2. **Configure Qwen.** Click **配置千问 API Key** or **选择回答模型** and enter your own Qwen key. A fresh installation selects **`qwen3.8-flash`** by default. Follow the steps below.
 3. **Prepare recognition.** In **模型与设置**, click **下载／检查语音模型** and wait for completion before your interview. This is first-time preparation.
 4. **Select the source.** For Zoom, choose **会议／电脑声音** and the same output device as Zoom. For practice, choose **麦克风／耳麦** and your headset microphone. Choose **双方同时识别** when you want both sides captioned, with each device selected separately.

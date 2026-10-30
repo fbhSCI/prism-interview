@@ -7,17 +7,17 @@
 ## 1. 安装 Windows 程序
 
 1. 打开 [Releases 下载页](https://github.com/fbhSCI/prism-interview/releases)，进入最新版本。
-2. 展开 **Assets**，下载 **PrismInterview-0.4.1-Windows-Setup.zip**。
+2. 展开 **Assets**，下载 **PrismInterview-0.4.2-Windows-Setup.zip**。
 3. 右键压缩包，选择“全部解压”，打开解压后的 `PrismInterview-Setup` 文件夹，双击 **安装PrismInterview.cmd**。
 4. 如果已安装 0.4.0，按提示粘贴旧程序文件夹路径来复用运行文件；首次安装直接按回车，安装器会从官方 GitHub 获取所需文件。首次下载可能需要数分钟，窗口会显示状态，请等它提示“安装完成”。
-5. 打开桌面的 **Prism Interview 0.4.1**，再继续下面的设置。安装器不会自动启动程序或监听。
+5. 打开桌面的 **Prism Interview 0.4.2**，再继续下面的设置。安装器不会自动启动程序或监听。
 
-安装不需要 Python 或管理员权限。默认位置是当前 Windows 用户的 `%LOCALAPPDATA%\Programs\PrismInterview\0.4.1`。旧程序、资料、设置和密钥不会被覆盖。
+安装不需要 Python 或管理员权限。默认位置是当前 Windows 用户的 `%LOCALAPPDATA%\Programs\PrismInterview\0.4.2`。旧程序、资料、设置和密钥不会被覆盖。
 
 想装到其他磁盘时，在解压后的文件夹打开 PowerShell，执行：
 
 ```powershell
-.\安装PrismInterview.cmd -DestinationDirectory 'D:\PrismInterview\0.4.1'
+.\安装PrismInterview.cmd -DestinationDirectory 'D:\PrismInterview\0.4.2'
 ```
 
 Windows 10/11 64 位可用；推荐 16 GB 内存和 NVIDIA RTX 显卡。使用 NVIDIA 显卡时先安装适合本机的显卡驱动。CPU 也能识别，但等待通常更长。
